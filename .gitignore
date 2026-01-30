@@ -1,0 +1,41 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.cache/
+*.log
+
+# ---- Virtual envs ----
+.venv/
+venv/
+env/
+
+# ---- Env files ----
+.env
+.env.*
+!.env.example
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.iml
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Local dev artifacts ----
+*.sqlite3
+*.db
