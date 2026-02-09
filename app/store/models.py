@@ -20,6 +20,7 @@ class PlayerStore(BaseModel):
     last_seen: int
     warnings: int = 0
     muted_until: int = 0
+    kicked: bool = False
 
 
 class RoomHeaderStore(BaseModel):

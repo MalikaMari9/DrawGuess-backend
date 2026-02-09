@@ -131,7 +131,11 @@ class RedisRepo:
     # ----------------------------
     async def set_roles(self, room_code: str, roles: dict[str, str]) -> None:
         # roles: {"gm": pid, "drawer": pid} OR {"drawerA": pidA, "drawerB": pidB}
-        await self.r.hset(RK(room_code).roles(), mapping=roles)
+        rk = RK(room_code)
+        if not roles:
+            await self.r.delete(rk.roles())
+            return
+        await self.r.hset(rk.roles(), mapping=roles)
 
     async def get_roles(self, room_code: str) -> dict[str, str]:
         data = await self.r.hgetall(RK(room_code).roles())
@@ -152,6 +156,10 @@ class RedisRepo:
 
     async def get_team_members(self, room_code: str, team: Literal["A", "B"]) -> set[str]:
         members = await self.r.smembers(RK(room_code).team(team))
+        return {self._dec(x) for x in members}
+
+    async def get_active_pids(self, room_code: str) -> set[str]:
+        members = await self.r.smembers(RK(room_code).active())
         return {self._dec(x) for x in members}
 
     # ----------------------------
@@ -228,6 +236,20 @@ class RedisRepo:
             await self.r.delete(rk.ops())
 
     # ----------------------------
+    # Moderation log
+    # ----------------------------
+    async def append_modlog(self, room_code: str, entry: ModLogEntry, max_entries: int = 50) -> None:
+        rk = RK(room_code)
+        pipe = self.r.pipeline()
+        pipe.rpush(rk.modlog(), entry.model_dump_json())
+        pipe.ltrim(rk.modlog(), -max_entries, -1)
+        await pipe.execute()
+
+    async def get_modlog(self, room_code: str, start: int = 0, end: int = -1) -> list[ModLogEntry]:
+        raw = await self.r.lrange(RK(room_code).modlog(), start, end)
+        return [ModLogEntry.model_validate_json(self._dec(x)) for x in raw]
+
+    # ----------------------------
     # Budget / cooldown (non-atomic version first)
     # ----------------------------
     async def set_budget_fields(self, room_code: str, **fields: Any) -> None:
@@ -261,3 +283,12 @@ class RedisRepo:
         rk = RK(room_code)
         await self.r.sadd(rk.votes_next(), pid)
         return int(await self.r.scard(rk.votes_next()))
+
+    async def vote_next_remove(self, room_code: str, pid: str) -> int:
+        # returns current vote count
+        rk = RK(room_code)
+        await self.r.srem(rk.votes_next(), pid)
+        return int(await self.r.scard(rk.votes_next()))
+
+    async def vote_next_clear(self, room_code: str) -> None:
+        await self.r.delete(RK(room_code).votes_next())

@@ -13,7 +13,7 @@ Mode = Literal["SINGLE", "VS"]
 Team = Literal["A", "B"]
 
 RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_ROUND", "ROUND_END"]
-Phase = Literal["", "FREE", "DRAW", "GUESS"]
+Phase = Literal["", "FREE", "DRAW", "GUESS", "VOTING"]
 
 
 # =========================
@@ -68,6 +68,7 @@ class InDrawOp(InBase):
 
 class InVoteNext(InBase):
     type: Literal["vote_next"] = "vote_next"
+    vote: Literal["yes", "no"] = "yes"
 
 
 class InPhaseTick(InBase):
@@ -78,6 +79,41 @@ class InSabotage(InBase):
     type: Literal["sabotage"] = "sabotage"
     target: Team
     op: Dict[str, Any]
+
+class InModeration(InBase):
+    type: Literal["moderation"] = "moderation"
+    action: Literal["warn", "mute", "kick"]
+    target: str
+    reason: Optional[str] = ""
+    duration_sec: Optional[int] = None
+
+# ---- Lobby/VS Mode inputs ----
+
+class InSetTeam(InBase):
+    type: Literal["set_team"] = "set_team"
+    team: Team  # "A" | "B"
+
+
+class InStartRolePick(InBase):
+    type: Literal["start_role_pick"] = "start_role_pick"
+
+
+class InAssignRoles(InBase):
+    type: Literal["assign_roles"] = "assign_roles"
+    drawerA: Optional[str] = None  # pid, if None auto-assign
+    drawerB: Optional[str] = None  # pid, if None auto-assign
+
+
+class InStartRound(InBase):
+    type: Literal["start_round"] = "start_round"
+    # Secret word for this round. Must NOT be broadcast to non-GM clients.
+    secret_word: str = Field(min_length=1, max_length=50)
+    # Total time limit for the drawing phase (seconds). Example: 240 (4 minutes).
+    time_limit_sec: int = Field(default=240, ge=60, le=900)
+    # Strokes per DRAW phase for each team (VS mode): 3–5 as per spec.
+    strokes_per_phase: int = Field(default=3, ge=3, le=5)
+    # Optional guess window length (seconds) for VS mode, e.g. 10s.
+    guess_window_sec: int = Field(default=10, ge=5, le=60)
 
 
 # Union of all incoming messages you support right now
@@ -92,6 +128,11 @@ IncomingMessage = Union[
     InVoteNext,
     InPhaseTick,
     InSabotage,
+    InModeration,
+    InSetTeam,
+    InStartRolePick,
+    InAssignRoles,
+    InStartRound,
 ]
 
 
@@ -117,6 +158,7 @@ class OutRoomSnapshot(OutBase):
     round_config: Dict[str, Any] = Field(default_factory=dict)
     game: Dict[str, Any] = Field(default_factory=dict)
     ops: List[Dict[str, Any]] = Field(default_factory=list)
+    modlog: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class OutRoomCreated(OutBase):
@@ -143,14 +185,7 @@ class OutOpBroadcast(OutBase):
     by: str
 
 
-OutgoingEvent = Union[
-    OutError,
-    OutRoomSnapshot,
-    OutRoomCreated,
-    OutPlayerJoined,
-    OutPlayerLeft,
-    OutOpBroadcast,
-]
+# Moved to end of file
 
 
 # =========================
@@ -169,6 +204,11 @@ _INCOMING_BY_TYPE = {
     "vote_next": InVoteNext,
     "phase_tick": InPhaseTick,
     "sabotage": InSabotage,
+    "moderation": InModeration,
+    "set_team": InSetTeam,
+    "start_role_pick": InStartRolePick,
+    "assign_roles": InAssignRoles,
+    "start_round": InStartRound,
 }
 
 
@@ -194,14 +234,9 @@ def parse_incoming(payload: Dict[str, Any]) -> IncomingMessage:
     return cls.model_validate(payload)
 
 
-#Lobby Protocols
-
-class InSetTeam(InBase):
-    type: Literal["set_team"] = "set_team"
-    team: Team  # "A" | "B"
-
-class InStartRolePick(InBase):
-    type: Literal["start_role_pick"] = "start_role_pick"
+# =========================
+# Lobby/VS Mode Events
+# =========================
 
 class OutTeamsUpdated(OutBase):
     type: Literal["teams_updated"] = "teams_updated"
@@ -210,3 +245,77 @@ class OutTeamsUpdated(OutBase):
 class OutRoomStateChanged(OutBase):
     type: Literal["room_state_changed"] = "room_state_changed"
     state: RoomState
+
+
+class OutRolesAssigned(OutBase):
+    type: Literal["roles_assigned"] = "roles_assigned"
+    roles: Dict[str, str]  # {"drawerA": pid, "drawerB": pid}
+
+class OutPlayerUpdated(OutBase):
+    type: Literal["player_updated"] = "player_updated"
+    player: Dict[str, Any]
+
+class OutModLogEntry(OutBase):
+    type: Literal["modlog_entry"] = "modlog_entry"
+    entry: Dict[str, Any]
+
+class OutPlayerKicked(OutBase):
+    type: Literal["player_kicked"] = "player_kicked"
+    pid: str
+    reason: str = ""
+
+# ---- VS Mode Events ----
+
+class OutPhaseChanged(OutBase):
+    type: Literal["phase_changed"] = "phase_changed"
+    phase: Phase
+    round_no: int
+
+
+class OutGuessResult(OutBase):
+    type: Literal["guess_result"] = "guess_result"
+    correct: bool
+    team: Optional[Team] = None
+    text: str
+    by: str
+
+
+class OutBudgetUpdate(OutBase):
+    type: Literal["budget_update"] = "budget_update"
+    budget: Dict[str, int]  # {"A": 3, "B": 2} or {"stroke_remaining": 5}
+
+
+class OutSabotageUsed(OutBase):
+    type: Literal["sabotage_used"] = "sabotage_used"
+    by: str
+    target: Team
+    cooldown_until: int
+
+
+class OutRoundEnd(OutBase):
+    type: Literal["round_end"] = "round_end"
+    winner: Optional[Team] = None
+    word: str
+    round_no: int
+
+
+# Update OutgoingEvent union
+OutgoingEvent = Union[
+    OutError,
+    OutRoomSnapshot,
+    OutRoomCreated,
+    OutPlayerJoined,
+    OutPlayerLeft,
+    OutOpBroadcast,
+    OutPlayerUpdated,
+    OutModLogEntry,
+    OutPlayerKicked,
+    OutTeamsUpdated,
+    OutRoomStateChanged,
+    OutRolesAssigned,
+    OutPhaseChanged,
+    OutGuessResult,
+    OutBudgetUpdate,
+    OutSabotageUsed,
+    OutRoundEnd,
+]
