@@ -14,10 +14,13 @@ from app.transport.protocols import (
     InLeave,
     InHeartbeat,
     InSnapshot,
+    InReconnect,
     InSetTeam,
     InStartRolePick,
     InAssignRoles,
     InStartRound,
+    InSetRoundConfig,
+    InStartGame,
     InDrawOp,
     InGuess,
     InPhaseTick,
@@ -34,6 +37,7 @@ from app.domain.lifecycle.handlers import (
     handle_leave,
     handle_heartbeat,
     handle_snapshot,
+    handle_reconnect,
 )
 
 from app.domain.lobby.handlers import handle_set_team, handle_start_role_pick
@@ -47,6 +51,14 @@ from app.domain.vs.handlers import (
     handle_vs_vote_next,
 )
 from app.domain.moderation.handlers import handle_moderation
+from app.domain.single.handlers import (
+    handle_single_set_round_config,
+    handle_single_start_game,
+    handle_single_draw_op,
+    handle_single_guess,
+    handle_single_phase_tick,
+    handle_single_vote_next,
+)
 from app.domain.common.validation import is_muted
 from app.util.timeutil import now_ts
 
@@ -71,12 +83,12 @@ async def dispatch_message(
     """
     try:
         msg = parse_incoming(raw)
-    except ValidationError as e:
+    except (ValidationError, ValueError) as e:
         err = OutError(code="BAD_MESSAGE", message=str(e)).model_dump()
         return [err], []
 
     # If player is kicked, block all non-join messages
-    if pid and not isinstance(msg, (InCreateRoom, InJoin)):
+    if pid and not isinstance(msg, (InCreateRoom, InJoin, InReconnect)):
         repo = app.state.repo
         player = await repo.get_player(room_code, pid)
         if player is not None and getattr(player, "kicked", False):
@@ -84,7 +96,7 @@ async def dispatch_message(
             return [err], []
 
     # If player is muted, block all actions except heartbeat/snapshot/leave
-    if pid and not isinstance(msg, (InCreateRoom, InJoin, InHeartbeat, InSnapshot, InLeave)):
+    if pid and not isinstance(msg, (InCreateRoom, InJoin, InReconnect, InHeartbeat, InSnapshot, InLeave)):
         repo = app.state.repo
         player = await repo.get_player(room_code, pid)
         if player is not None and is_muted(player, now_ts()):
@@ -111,6 +123,10 @@ async def dispatch_message(
     if isinstance(msg, InSnapshot):
         to_sender, to_room = await handle_snapshot(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
+
+    if isinstance(msg, InReconnect):
+        to_sender, to_room = await handle_reconnect(app=app, room_code=room_code, pid=pid, msg=msg)
+        return _dump(to_sender), _dump(to_room)
     #Lobby
     if isinstance(msg, InSetTeam):
         to_sender, to_room = await handle_set_team(app=app, room_code=room_code, pid=pid, msg=msg)
@@ -122,6 +138,15 @@ async def dispatch_message(
 
     if isinstance(msg, InModeration):
         to_sender, to_room = await handle_moderation(app=app, room_code=room_code, pid=pid, msg=msg)
+        return _dump(to_sender), _dump(to_room)
+
+    # ---- SINGLE: GM config / start ----
+    if isinstance(msg, InSetRoundConfig):
+        to_sender, to_room = await handle_single_set_round_config(app=app, room_code=room_code, pid=pid, msg=msg)
+        return _dump(to_sender), _dump(to_room)
+
+    if isinstance(msg, InStartGame):
+        to_sender, to_room = await handle_single_start_game(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
 
     # ---- VS Mode routing ----
@@ -142,8 +167,10 @@ async def dispatch_message(
         if header and header.mode == "VS":
             to_sender, to_room = await handle_vs_draw_op(app=app, room_code=room_code, pid=pid, msg=msg)
             return _dump(to_sender), _dump(to_room)
-        # TODO: route to SINGLE mode handler when implemented
-        err = OutError(code="NOT_IMPLEMENTED", message="SINGLE mode draw_op not implemented").model_dump()
+        if header and header.mode == "SINGLE":
+            to_sender, to_room = await handle_single_draw_op(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="draw_op only for VS/SINGLE rooms").model_dump()
         return [err], []
 
     if isinstance(msg, InGuess):
@@ -152,8 +179,10 @@ async def dispatch_message(
         if header and header.mode == "VS":
             to_sender, to_room = await handle_vs_guess(app=app, room_code=room_code, pid=pid, msg=msg)
             return _dump(to_sender), _dump(to_room)
-        # TODO: route to SINGLE mode handler when implemented
-        err = OutError(code="NOT_IMPLEMENTED", message="SINGLE mode guess not implemented").model_dump()
+        if header and header.mode == "SINGLE":
+            to_sender, to_room = await handle_single_guess(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="guess only for VS/SINGLE rooms").model_dump()
         return [err], []
 
     if isinstance(msg, InPhaseTick):
@@ -162,7 +191,10 @@ async def dispatch_message(
         if header and header.mode == "VS":
             to_sender, to_room = await handle_vs_phase_tick(app=app, room_code=room_code, pid=pid, msg=msg)
             return _dump(to_sender), _dump(to_room)
-        err = OutError(code="NOT_IMPLEMENTED", message="Phase tick only for VS mode").model_dump()
+        if header and header.mode == "SINGLE":
+            to_sender, to_room = await handle_single_phase_tick(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="phase_tick only for VS/SINGLE rooms").model_dump()
         return [err], []
 
     if isinstance(msg, InSabotage):
@@ -180,7 +212,10 @@ async def dispatch_message(
         if header and header.mode == "VS":
             to_sender, to_room = await handle_vs_vote_next(app=app, room_code=room_code, pid=pid, msg=msg)
             return _dump(to_sender), _dump(to_room)
-        err = OutError(code="NOT_IMPLEMENTED", message="vote_next only for VS mode").model_dump()
+        if header and header.mode == "SINGLE":
+            to_sender, to_room = await handle_single_vote_next(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="vote_next only for VS/SINGLE rooms").model_dump()
         return [err], []
 
     # If protocol exists but we didn't route it yet:

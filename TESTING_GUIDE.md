@@ -78,31 +78,20 @@ Tip:
 
 ---
 
-### Step 4: Start Role Pick (GM Only)
+### Step 4: Start Role Pick (GM Assigned Here, Auto-Assign)
 
 1. Confirm 5+ players and both teams have members
 2. Click `Start Role Pick`
 
 Expected:
-- Room state changes to ROLE_PICK
-
----
-
-### Step 5: Assign Roles (GM Only)
-
-1. In `Assign Roles`, pick a drawer from Team A and Team B
-2. Or leave auto-assign
-3. Click `Assign Roles`
-
-Expected:
-- Drawers assigned
-- Others become guessers
+- GM is assigned automatically if none exists
+- Roles are auto-assigned (drawerA/drawerB; others guessers)
 - State changes to CONFIG
 - Roles visible to each player
 
 ---
 
-### Step 6: Start Round (GM Only)
+### Step 5: Start Round (GM Only)
 
 1. In CONFIG state, open `Start Round`
 2. Enter a word (example: `elephant`)
@@ -116,7 +105,7 @@ Expected:
 
 ---
 
-### Step 7: Test Drawing (Drawers Only)
+### Step 6: Test Drawing (Drawers Only)
 
 1. In DRAW phase, use `Test Draw (Line)`
 2. Send multiple strokes until budget is 0
@@ -128,7 +117,7 @@ Expected:
 
 ---
 
-### Step 8: Test Sabotage (Drawers Only)
+### Step 7: Test Sabotage (Drawers Only)
 
 1. In DRAW phase, click `Sabotage Opponent`
 
@@ -144,7 +133,7 @@ Test cooldown:
 
 ---
 
-### Step 9: Advance to GUESS (GM Only)
+### Step 8: Advance to GUESS (GM Only)
 
 1. Click `Advance Phase (DRAW <-> GUESS)`
 
@@ -155,7 +144,7 @@ Expected:
 
 ---
 
-### Step 10: Test Guessing (Guessers Only)
+### Step 9: Test Guessing (Guessers Only)
 
 1. Enter a guess and submit
 
@@ -165,7 +154,7 @@ Expected:
 
 ---
 
-### Step 11: Phase Cycling (GM Only)
+### Step 10: Phase Cycling (GM Only)
 
 1. If no correct guess, click `Advance Phase` again
 
@@ -175,7 +164,7 @@ Expected:
 
 ---
 
-### Step 12: Round End
+### Step 11: Round End
 
 When a team guesses correctly:
 - Round ends automatically
@@ -190,7 +179,7 @@ When a team guesses correctly:
 - [ ] Create VS room
 - [ ] Join with 5+ players
 - [ ] Assign teams
-- [ ] Assign roles
+- [ ] Roles auto-assigned on role pick
 - [ ] Start round
 - [ ] Draw operations work
 - [ ] Guess operations work
@@ -235,8 +224,8 @@ When a team guesses correctly:
 ### "VS mode requires at least 5 players"
 Fix: Make sure 5+ players are in the room before role pick.
 
-### "Only GameMaster can assign roles"
-Fix: Only the first player (GM) can assign roles.
+### "Only GameMaster can start role pick"
+Fix: Role pick assigns the GM; any connected player can trigger the initial role pick. Later GM-only actions still require the assigned GM.
 
 ### "No strokes remaining"
 Fix: Budget is consumed. Wait for next DRAW phase.

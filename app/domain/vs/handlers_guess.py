@@ -90,12 +90,12 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
 
     # If correct, end round
     if correct:
-        # Update score and move to VOTING phase
+        # Update score and end round
         game = await repo.get_game(room_code)
         score = game.get("score") or {"A": 0, "B": 0}
         if player.team in ["A", "B"]:
             score[player.team] = int(score.get(player.team, 0)) + 1
-        await repo.set_game_fields(room_code, score=score, phase="VOTING")
+        await repo.set_game_fields(room_code, score=score)
 
         # Persist round end metadata
         await repo.set_game_fields(

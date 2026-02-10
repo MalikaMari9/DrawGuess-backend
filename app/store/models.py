@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 Mode = Literal["SINGLE", "VS"]
 RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_ROUND", "ROUND_END"]
-Phase = Literal["", "FREE", "DRAW", "GUESS"]
+Phase = Literal["", "FREE", "DRAW", "GUESS", "VOTING"]
 
 
 class PlayerStore(BaseModel):

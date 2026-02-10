@@ -28,6 +28,13 @@ class WSManager:
         async with self._lock:
             self._rooms.setdefault(room_code, {})[pid] = Conn(pid=pid, ws=ws)
 
+    async def replace_pid(self, room_code: str, old_pid: str, new_pid: str, ws: WebSocket) -> None:
+        async with self._lock:
+            room = self._rooms.setdefault(room_code, {})
+            if old_pid in room:
+                room.pop(old_pid, None)
+            room[new_pid] = Conn(pid=new_pid, ws=ws)
+
     async def remove(self, room_code: str, pid: str) -> None:
         async with self._lock:
             room = self._rooms.get(room_code)
@@ -59,6 +66,21 @@ class WSManager:
             except Exception:
                 # if a socket is dead, ignore; ws.py will cleanup on disconnect
                 pass
+
+    async def close_pid(self, room_code: str, pid: str, code: int = 4000, reason: str = "kicked") -> None:
+        """
+        Close a specific player's websocket and remove from registry.
+        """
+        async with self._lock:
+            room = self._rooms.get(room_code, {})
+            conn = room.get(pid)
+        if conn is None:
+            return
+        try:
+            await conn.ws.close(code=code)
+        except Exception:
+            pass
+        await self.remove(room_code, pid)
 
     async def room_size(self, room_code: str) -> int:
         async with self._lock:

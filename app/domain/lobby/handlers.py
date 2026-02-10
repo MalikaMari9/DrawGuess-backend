@@ -14,6 +14,7 @@ from app.transport.protocols import (
     InStartRolePick,
 )
 from app.domain.vs.roles import auto_assign_vs_roles
+from app.domain.helpers.role_pick import assign_single_roles
 
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
 
@@ -72,8 +73,8 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
         if len(connected) < 5:
             return [OutError(code="NOT_ENOUGH_PLAYERS", message="VS mode requires at least 5 players")], []
     else:
-        if len(connected) < 2:
-            return [OutError(code="NOT_ENOUGH_PLAYERS", message="Need at least 2 players")], []
+        if len(connected) < 3:
+            return [OutError(code="NOT_ENOUGH_PLAYERS", message="SINGLE mode requires at least 3 players")], []
 
     # Auto-assign GM if none exists yet (random among connected players)
     gm_pid = header.gm_pid
@@ -92,11 +93,22 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
 
         return [], [
             OutRoomStateChanged(state="CONFIG"),
-            OutRolesAssigned(roles=roles),
+            OutRolesAssigned(mode="VS", roles=roles),
         ]
 
-    # Non-VS: only advance state
+    # SINGLE: auto-assign GM + drawer + guessers, then move to ROLE_PICK
+    gm_pid, drawer_pid, guesser_pids = await assign_single_roles(
+        repo=repo,
+        room_code=room_code,
+        connected=connected,
+        gm_pid=gm_pid,
+        seed=f"{room_code}:{ts}",
+    )
+
     await repo.update_room_fields(room_code, state="ROLE_PICK", last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
-    return [], [OutRoomStateChanged(state="ROLE_PICK")]
+    return [], [
+        OutRoomStateChanged(state="ROLE_PICK"),
+        OutRolesAssigned(mode="SINGLE", roles={"gm_pid": gm_pid, "drawer_pid": drawer_pid, "guesser_pids": guesser_pids}),
+    ]

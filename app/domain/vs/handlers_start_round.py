@@ -132,7 +132,7 @@ async def handle_vs_start_round(*, app, room_code: str, pid: Optional[str], msg:
 
     budget = await repo.get_budget(room_code)
     return [], [
-        OutRolesAssigned(roles=roles),
+        OutRolesAssigned(mode="VS", roles=roles),
         OutRoomStateChanged(state="IN_ROUND"),
         OutPhaseChanged(phase="DRAW", round_no=round_no),
         OutBudgetUpdate(budget=budget),

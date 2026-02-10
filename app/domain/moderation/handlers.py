@@ -71,6 +71,10 @@ async def handle_moderation(*, app, room_code: str, pid: Optional[str], msg: InM
 
     if action == "kick":
         to_room.append(OutPlayerKicked(pid=msg.target, reason=reason))
+        # Immediately close target's websocket (if connected)
+        wsman = getattr(app.state, "wsman", None)
+        if wsman is not None:
+            await wsman.close_pid(room_code, msg.target, code=4001, reason="kicked")
 
     return [], to_room
 

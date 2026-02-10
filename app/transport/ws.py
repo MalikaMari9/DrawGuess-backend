@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.settings import get_settings
 from app.domain.lifecycle.handlers import handle_disconnect
 from app.transport.dispatcher import dispatch_message
+from app.transport.protocols import OutHello
 
 router = APIRouter()
 
@@ -51,10 +52,19 @@ async def ws_room(websocket: WebSocket, room_code: str):
     pid = uuid.uuid4().hex[:10]
     wsman = websocket.app.state.wsman
     await wsman.add(room_code, pid, websocket)
+    await websocket.send_json(OutHello(pid=pid, room_code=room_code).model_dump())
 
     try:
         while True:
             raw = await websocket.receive_json()
+
+            # Reconnect: replace pid mapping with existing pid from client
+            if isinstance(raw, dict) and raw.get("type") == "reconnect" and isinstance(raw.get("pid"), str):
+                new_pid = raw.get("pid")
+                if new_pid and new_pid != pid:
+                    await wsman.replace_pid(room_code, pid, new_pid, websocket)
+                    pid = new_pid
+                    await websocket.send_json(OutHello(pid=pid, room_code=room_code).model_dump())
 
             to_sender, to_room = await dispatch_message(
                 app=websocket.app,

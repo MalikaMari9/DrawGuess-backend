@@ -48,6 +48,10 @@ class InHeartbeat(InBase):
 class InSnapshot(InBase):
     type: Literal["snapshot"] = "snapshot"
 
+class InReconnect(InBase):
+    type: Literal["reconnect"] = "reconnect"
+    pid: str
+
 
 # ---- Shared gameplay inputs ----
 
@@ -115,6 +119,20 @@ class InStartRound(InBase):
     # Optional guess window length (seconds) for VS mode, e.g. 10s.
     guess_window_sec: int = Field(default=10, ge=5, le=60)
 
+# ---- SINGLE (GM config / start) ----
+
+class InSetRoundConfig(InBase):
+    """GM sets SINGLE round config (secret word + limits)."""
+    type: Literal["set_round_config"] = "set_round_config"
+    secret_word: str = Field(min_length=1, max_length=40)
+    stroke_limit: int = Field(ge=10, le=20)
+    time_limit_sec: int = Field(ge=180, le=420)
+
+
+class InStartGame(InBase):
+    """GM starts the round after setting config."""
+    type: Literal["start_game"] = "start_game"
+
 
 # Union of all incoming messages you support right now
 IncomingMessage = Union[
@@ -123,6 +141,7 @@ IncomingMessage = Union[
     InLeave,
     InHeartbeat,
     InSnapshot,
+    InReconnect,
     InGuess,
     InDrawOp,
     InVoteNext,
@@ -133,6 +152,8 @@ IncomingMessage = Union[
     InStartRolePick,
     InAssignRoles,
     InStartRound,
+    InSetRoundConfig,
+    InStartGame,
 ]
 
 
@@ -165,6 +186,11 @@ class OutRoomCreated(OutBase):
     type: Literal["room_created"] = "room_created"
     room_code: str
     mode: Mode
+
+class OutHello(OutBase):
+    type: Literal["hello"] = "hello"
+    pid: str
+    room_code: str
 
 
 class OutPlayerJoined(OutBase):
@@ -199,6 +225,7 @@ _INCOMING_BY_TYPE = {
     "leave": InLeave,
     "heartbeat": InHeartbeat,
     "snapshot": InSnapshot,
+    "reconnect": InReconnect,
     "guess": InGuess,
     "draw_op": InDrawOp,
     "vote_next": InVoteNext,
@@ -209,6 +236,8 @@ _INCOMING_BY_TYPE = {
     "start_role_pick": InStartRolePick,
     "assign_roles": InAssignRoles,
     "start_round": InStartRound,
+    "set_round_config": InSetRoundConfig,
+    "start_game": InStartGame,
 }
 
 
@@ -219,17 +248,11 @@ def parse_incoming(payload: Dict[str, Any]) -> IncomingMessage:
     """
     t = payload.get("type")
     if not isinstance(t, str):
-        raise ValidationError.from_exception_data(
-            title="IncomingMessage",
-            line_errors=[{"loc": ("type",), "msg": "Missing/invalid type", "type": "value_error"}],
-        )
+        raise ValueError("Missing/invalid type")
 
     cls = _INCOMING_BY_TYPE.get(t)
     if cls is None:
-        raise ValidationError.from_exception_data(
-            title="IncomingMessage",
-            line_errors=[{"loc": ("type",), "msg": f"Unknown message type: {t}", "type": "value_error"}],
-        )
+        raise ValueError(f"Unknown message type: {t}")
 
     return cls.model_validate(payload)
 
@@ -249,7 +272,8 @@ class OutRoomStateChanged(OutBase):
 
 class OutRolesAssigned(OutBase):
     type: Literal["roles_assigned"] = "roles_assigned"
-    roles: Dict[str, str]  # {"drawerA": pid, "drawerB": pid}
+    mode: Mode
+    roles: Dict[str, Any]  # VS: {"drawerA": pid, "drawerB": pid} | SINGLE: {"gm_pid": ..., "drawer_pid": ..., "guesser_pids": [...]}
 
 class OutPlayerUpdated(OutBase):
     type: Literal["player_updated"] = "player_updated"
@@ -280,6 +304,14 @@ class OutGuessResult(OutBase):
     by: str
 
 
+class OutGuessChat(OutBase):
+    type: Literal["guess_chat"] = "guess_chat"
+    ts: int
+    pid: str
+    name: str
+    text: str
+
+
 class OutBudgetUpdate(OutBase):
     type: Literal["budget_update"] = "budget_update"
     budget: Dict[str, int]  # {"A": 3, "B": 2} or {"stroke_remaining": 5}
@@ -301,6 +333,7 @@ class OutRoundEnd(OutBase):
 
 # Update OutgoingEvent union
 OutgoingEvent = Union[
+    OutHello,
     OutError,
     OutRoomSnapshot,
     OutRoomCreated,
@@ -314,6 +347,7 @@ OutgoingEvent = Union[
     OutRoomStateChanged,
     OutRolesAssigned,
     OutPhaseChanged,
+    OutGuessChat,
     OutGuessResult,
     OutBudgetUpdate,
     OutSabotageUsed,

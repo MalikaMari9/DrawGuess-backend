@@ -111,5 +111,5 @@ async def handle_vs_role_pick(*, app, room_code: str, pid: Optional[str], msg: I
     # Broadcast role assignments to all players
     return [], [
         OutRoomStateChanged(state="CONFIG"),
-        OutRolesAssigned(roles={k: v for k, v in roles.items() if k in ["drawerA", "drawerB"]}),
+        OutRolesAssigned(mode="VS", roles={k: v for k, v in roles.items() if k in ["drawerA", "drawerB"]}),
     ]
