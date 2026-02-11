@@ -1,7 +1,6 @@
 # 🎮 Distributed Drawing Guessing Game (Revised to Match Current Backend)
 
-This document reflects the **current implementation** (VS mode only, auto role-pick, moderation, Redis TTL).  
-Single mode is planned but not yet implemented.
+This document reflects the **current implementation** (VS + Single mode, auto role-pick, moderation, Redis TTL).
 
 ---
 
@@ -20,7 +19,7 @@ Browser Clients  <->  FastAPI WebSocket Server  <->  Redis (TTL state)
 
 ---
 
-## 2. Implemented Game Mode
+## 2. Implemented Game Modes
 
 ### VS Mode (Team Competitive)
 
@@ -43,7 +42,30 @@ Phases repeat until a correct guess or vote outcome ends the round.
 - **GM is assigned during `start_role_pick`** (not necessarily the room creator).
 - Roles are **auto-assigned**: drawers are selected per team, others become guessers.
 - Room moves directly to `CONFIG`.
- - The initial role pick can be triggered by any connected player.
+- The initial role pick can be triggered by any connected player.
+- VS teams are auto-assigned (balanced split); manual team selection is disabled.
+
+### Single Mode (One Drawer, Many Guessers)
+
+**Roles**
+- GameMaster (GM)
+- Drawer
+- Guessers
+
+**Minimum Players**
+- 3 connected players
+
+**Phase Flow**
+1. **DRAW**: Drawer uses limited strokes.
+2. **GUESS**: Guessers submit guesses.
+3. **VOTING**: All active players vote to proceed.
+
+Correct guess ends the round and enters `VOTING`.
+
+**Role Pick**
+- GM assigned during `start_role_pick`.
+- Drawer + guessers are auto-assigned.
+- New rounds re-run role pick.
 
 ---
 
@@ -82,7 +104,7 @@ Phases repeat until a correct guess or vote outcome ends the round.
 - Votes from inactive players are ignored.
 
 **Outcome**
-- Majority YES: new GM assigned, roles cleared, room returns to `ROLE_PICK`.
+- Majority YES: roles cleared and room returns to `ROLE_PICK` (new roles assigned).
 - NO / tie: round ends (`ROUND_END`).
 
 ---
@@ -98,7 +120,16 @@ Kicked players are disconnected immediately.
 
 ---
 
-## 7. Redis State (Implemented Keys)
+## 7. Reconnect Behavior
+
+- Clients receive a server-assigned `pid` on connect.
+- On refresh, clients can send `reconnect` with the previous `pid`.
+- Server restores the player’s connection and returns a snapshot.
+- If the room expired or pid is invalid, reconnect fails with an error.
+
+---
+
+## 8. Redis State (Implemented Keys)
 
 Room-scoped keys (TTL refreshed on activity):
 - `room:<code>` (HASH) room header
@@ -111,13 +142,13 @@ Room-scoped keys (TTL refreshed on activity):
 - `room:<code>:budget` (HASH)
 - `room:<code>:cooldown` (HASH)
 - `room:<code>:ops:A` / `room:<code>:ops:B` (LIST)
+- `room:<code>:ops` (LIST) for Single mode
 - `room:<code>:votes:next` (SET)
 - `room:<code>:modlog` (LIST)
 
 ---
 
-## 8. Not Yet Implemented
+## 9. Not Yet Implemented
 
-- Single Mode rules
 - Final canvas-based frontend (current frontend is a tester UI)
 - Public / internet matchmaking

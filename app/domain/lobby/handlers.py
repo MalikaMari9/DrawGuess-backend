@@ -39,15 +39,9 @@ async def handle_set_team(*, app, room_code: str, pid: Optional[str], msg: InSet
     if header.mode != "VS":
         return [OutError(code="NOT_VS", message="set_team is only for VS rooms")], []
 
-    if header.state != "WAITING":
-        return [OutError(code="BAD_STATE", message=f"Cannot set team in state {header.state}")], []
+    # VS teams are auto-assigned; manual selection disabled
+    return [OutError(code="AUTO_TEAMS", message="Teams are auto-assigned in VS mode")], []
 
-    await repo.set_team(room_code, pid, msg.team)
-    await repo.update_room_fields(room_code, last_activity=ts)
-    await repo.refresh_room_ttl(room_code, mode=header.mode)
-
-    teams = await _build_teams(repo, room_code)
-    return [], [OutTeamsUpdated(teams=teams)]
 
 
 async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg: InStartRolePick) -> Result:
@@ -84,6 +78,27 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
 
     # VS mode: auto-assign drawers/guessers and move straight to CONFIG
     if header.mode == "VS":
+        # Auto-assign teams (balanced) if not already assigned
+        rng = random.Random(f"{room_code}:{ts}")
+        gm_pid = gm_pid or (random.choice(connected).pid if connected else None)
+        if gm_pid and header.gm_pid is None:
+            await repo.update_room_fields(room_code, gm_pid=gm_pid)
+
+        # keep existing teams if already assigned (reconnect safety)
+        team_a = await repo.get_team_members(room_code, "A")
+        team_b = await repo.get_team_members(room_code, "B")
+        if not team_a and not team_b:
+            pool = [p for p in connected if p.pid != gm_pid]
+            rng.shuffle(pool)
+            mid = (len(pool) + 1) // 2
+            team_a_pids = [p.pid for p in pool[:mid]]
+            team_b_pids = [p.pid for p in pool[mid:]]
+
+            for pid_a in team_a_pids:
+                await repo.set_team(room_code, pid_a, "A")
+            for pid_b in team_b_pids:
+                await repo.set_team(room_code, pid_b, "B")
+
         roles, error = await auto_assign_vs_roles(repo, room_code, gm_pid)
         if error:
             return [OutError(code="ROLE_ASSIGN_FAILED", message=error)], []
