@@ -3,6 +3,7 @@ import pytest
 from app.domain.single.handlers_guess import handle_single_guess
 from app.domain.single.handlers_phase import handle_single_phase_tick
 from app.domain.single.handlers_vote import handle_single_vote_next
+from app.domain.single.handlers_draw import handle_single_draw_op
 from app.store.models import PlayerStore, RoomHeaderStore
 
 
@@ -115,10 +116,27 @@ async def test_single_correct_guess_moves_to_voting():
     to_sender, to_room = await handle_single_guess(app=app, room_code="R1", pid="g", msg=Msg())
     assert repo.header.state == "ROUND_END"
     assert repo.game.get("phase") == "VOTING"
+    # roles cleared
+    assert repo.players["gm"].role is None
+    assert repo.players["d"].role is None
+    assert repo.players["g"].role is None
     # should emit phase change and round end
     types = {e.type for e in to_room if hasattr(e, "type")}
     assert "phase_changed" in types
     assert "round_end" in types
+
+
+@pytest.mark.asyncio
+async def test_single_guess_allowed_during_draw():
+    repo = FakeRepo()
+    app = FakeApp(repo)
+    repo.game["phase"] = "DRAW"
+
+    class Msg:
+        text = "apple"
+
+    to_sender, to_room = await handle_single_guess(app=app, room_code="R1", pid="g", msg=Msg())
+    assert not any(getattr(e, "type", "") == "error" for e in to_sender)
 
 
 @pytest.mark.asyncio
@@ -151,3 +169,36 @@ async def test_single_vote_all_active():
     to_sender, to_room = await handle_single_vote_next(app=app, room_code="R1", pid="gm", msg=Msg())
     # vote is accepted from GM (active)
     assert not any(getattr(e, "type", "") == "error" for e in to_sender)
+
+
+@pytest.mark.asyncio
+async def test_single_timeout_ends_round_on_guess():
+    repo = FakeRepo()
+    app = FakeApp(repo)
+    repo.game["round_end_at"] = 1  # already expired
+    repo.game["phase"] = "GUESS"
+
+    class Msg:
+        text = "apple"
+
+    to_sender, to_room = await handle_single_guess(app=app, room_code="R1", pid="g", msg=Msg())
+    assert any(getattr(e, "type", "") == "error" for e in to_sender)
+    types = {e.type for e in to_room if hasattr(e, "type")}
+    assert "room_state_changed" in types
+    assert "phase_changed" in types
+    assert "round_end" in types
+
+
+@pytest.mark.asyncio
+async def test_single_draw_rejects_long_stroke():
+    repo = FakeRepo()
+    app = FakeApp(repo)
+    repo.game["phase"] = "DRAW"
+    repo.game["strokes_left"] = 5
+    repo.game["drawer_pid"] = "d"
+
+    class Msg:
+        op = {"t": "line", "pts": [[0, 0]] * 1001, "start_ts": 0}
+
+    to_sender, to_room = await handle_single_draw_op(app=app, room_code="R1", pid="d", msg=Msg())
+    assert any(getattr(e, "type", "") == "error" for e in to_sender)

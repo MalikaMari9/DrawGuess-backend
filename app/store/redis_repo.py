@@ -17,6 +17,61 @@ class RedisRepo:
         self.r = r
         self.room_ttl_sec = room_ttl_sec
 
+    _LUA_CONSUME_STROKE = """
+local budget_key = KEYS[1]
+local team = ARGV[1]
+local cost = tonumber(ARGV[2]) or 1
+
+local cur = redis.call("HGET", budget_key, team)
+if not cur then
+  cur = 0
+else
+  cur = tonumber(cur) or 0
+end
+
+if cur < cost then
+  return {0, cur}
+end
+
+local new_val = redis.call("HINCRBY", budget_key, team, -cost)
+return {1, new_val}
+"""
+
+    _LUA_SABOTAGE = """
+local budget_key = KEYS[1]
+local cooldown_key = KEYS[2]
+local team = ARGV[1]
+local cost = tonumber(ARGV[2]) or 1
+local now_ts = tonumber(ARGV[3]) or 0
+local cooldown_until = tonumber(ARGV[4]) or 0
+
+local cur_cd = redis.call("HGET", cooldown_key, "sabotage_next_ts_" .. team)
+if cur_cd then
+  cur_cd = tonumber(cur_cd) or 0
+else
+  cur_cd = 0
+end
+
+if now_ts < cur_cd then
+  return {0, "COOLDOWN", cur_cd, cur_cd}
+end
+
+local cur = redis.call("HGET", budget_key, team)
+if not cur then
+  cur = 0
+else
+  cur = tonumber(cur) or 0
+end
+
+if cur < cost then
+  return {0, "BUDGET", cur_cd, cur}
+end
+
+local new_val = redis.call("HINCRBY", budget_key, team, -cost)
+redis.call("HSET", cooldown_key, "sabotage_next_ts_" .. team, cooldown_until)
+return {1, "OK", cooldown_until, new_val}
+"""
+
     def _dec(self, x):
             """Decode redis bytes -> str; pass through str/int/None safely."""
             if x is None:
@@ -141,7 +196,17 @@ class RedisRepo:
         data = await self.r.hgetall(RK(room_code).roles())
         return {self._dec(k): self._dec(v) for k, v in data.items()}
 
-    async def set_team(self, room_code: str, pid: str, team: Literal["A", "B"]) -> None:
+    async def set_team(
+        self,
+        room_code: str,
+        pid: str,
+        team: Literal["A", "B"],
+        *,
+        gm_pid: Optional[str] = None,
+    ) -> None:
+        if gm_pid and pid == gm_pid:
+            await self.clear_team(room_code, pid)
+            return
         rk = RK(room_code)
         # remove from both then add
         pipe = self.r.pipeline()
@@ -152,6 +217,14 @@ class RedisRepo:
 
         # ALSO persist on player record (snapshot reads this)
         await self.update_player_fields(room_code, pid, team=team)
+
+    async def clear_team(self, room_code: str, pid: str) -> None:
+        rk = RK(room_code)
+        pipe = self.r.pipeline()
+        pipe.srem(rk.team("A"), pid)
+        pipe.srem(rk.team("B"), pid)
+        await pipe.execute()
+        await self.update_player_fields(room_code, pid, team=None)
 
 
     async def get_team_members(self, room_code: str, team: Literal["A", "B"]) -> set[str]:
@@ -264,6 +337,39 @@ class RedisRepo:
         for k, v in data.items():
             out[self._dec(k)] = int(self._dec(v))
         return out
+
+    async def consume_vs_stroke(self, room_code: str, team: Literal["A", "B"], cost: int = 1) -> tuple[bool, int]:
+        rk = RK(room_code)
+        res = await self.r.eval(self._LUA_CONSUME_STROKE, 1, rk.budget(), team, str(cost))
+        ok = bool(int(res[0]))
+        remaining = int(res[1])
+        return ok, remaining
+
+    async def use_sabotage(
+        self,
+        room_code: str,
+        team: Literal["A", "B"],
+        *,
+        cost: int,
+        now_ts: int,
+        cooldown_until: int,
+    ) -> tuple[bool, str, int, int]:
+        rk = RK(room_code)
+        res = await self.r.eval(
+            self._LUA_SABOTAGE,
+            2,
+            rk.budget(),
+            rk.cooldown(),
+            team,
+            str(cost),
+            str(now_ts),
+            str(cooldown_until),
+        )
+        ok = bool(int(res[0]))
+        reason = self._dec(res[1])
+        cooldown_val = int(res[2])
+        remaining = int(res[3])
+        return ok, reason, cooldown_val, remaining
 
     async def set_cooldown_fields(self, room_code: str, **fields: Any) -> None:
         rk = RK(room_code)

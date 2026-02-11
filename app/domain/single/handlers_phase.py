@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 
 from app.transport.protocols import InPhaseTick, OutError, OutPhaseChanged
 from app.util.timeutil import now_ts
+from app.domain.lifecycle.handlers import _auto_expire_single_round
 
 Outgoing = List[object]
 Result = Tuple[Outgoing, Outgoing]
@@ -21,9 +22,13 @@ async def handle_single_phase_tick(*, app, room_code: str, pid: Optional[str], m
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message="Room not found")], []
     if header.mode != "SINGLE":
-        return [], []
+        return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
     if header.state != "IN_ROUND":
         return [OutError(code="BAD_STATE", message=f"Cannot phase_tick in state {header.state}")], []
+
+    timeout_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    if timeout_events:
+        return [OutError(code="ROUND_ENDED", message="Round timed out")], timeout_events
 
     player = await repo.get_player(room_code, pid)
     if not player or getattr(player, "role", None) != "gm":

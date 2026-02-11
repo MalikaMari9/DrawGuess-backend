@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import Optional
 
 from app.domain.common.validation import is_guesser, is_muted
-from .handlers_common import Result, transition_guess_to_voting
-from app.transport.protocols import OutError, OutGuessResult, OutRoomStateChanged, OutRoundEnd, InGuess
+from .handlers_common import Result, transition_guess_to_draw
+from app.transport.protocols import OutError, OutGuessResult, OutRoomStateChanged, OutRoundEnd, OutPhaseChanged, InGuess
 from app.util.timeutil import now_ts
 
 
@@ -34,6 +34,15 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
     if game.get("phase") != "GUESS":
         return [OutError(code="BAD_PHASE", message="Not in GUESS phase")], []
 
+    # Enforce round time limit
+    round_end_at_raw = game.get("round_end_at", 0)
+    try:
+        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
+    except (TypeError, ValueError):
+        round_end_at = 0
+    if round_end_at and ts >= round_end_at:
+        return [OutError(code="ROUND_ENDED", message="Round time limit reached")], []
+
     guess_end_at_raw = game.get("guess_end_at", 0)
     try:
         guess_end_at = int(guess_end_at_raw) if guess_end_at_raw else 0
@@ -41,11 +50,14 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
         guess_end_at = 0
 
     if guess_end_at and ts >= guess_end_at:
-        _, to_room = await transition_guess_to_voting(
+        round_cfg = await repo.get_round_config(room_code)
+        stroke_limit = round_cfg.get("strokes_per_phase", 3)
+        _, to_room = await transition_guess_to_draw(
             repo=repo,
             room_code=room_code,
             ts=ts,
             round_no=header.round_no,
+            stroke_limit=stroke_limit,
         )
         return [OutError(code="GUESS_EXPIRED", message="Guess phase timer expired")], to_room
 
@@ -90,6 +102,10 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
 
     # If correct, end round
     if correct:
+        # Clear roles for voting stage
+        from app.domain.common.roles import clear_all_roles
+        await clear_all_roles(repo, room_code)
+
         # Update score and end round
         game = await repo.get_game(room_code)
         score = game.get("score") or {"A": 0, "B": 0}
@@ -107,7 +123,7 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
         )
         await repo.set_game_fields(
             room_code,
-            phase="",
+            phase="VOTING",
             phase_guesses={},
             votes_next={},
             guess_started_at=0,
@@ -119,6 +135,7 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
             OutGuessResult(correct=True, team=player.team, text=msg.text, by=pid),
             OutRoundEnd(winner=player.team, word=word_raw, round_no=header.round_no),
             OutRoomStateChanged(state="ROUND_END"),
+            OutPhaseChanged(phase="VOTING", round_no=header.round_no),
         ]
 
     # Otherwise, broadcast guess result

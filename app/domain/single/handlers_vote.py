@@ -22,7 +22,7 @@ async def handle_single_vote_next(*, app, room_code: str, pid: Optional[str], ms
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message="Room not found")], []
     if header.mode != "SINGLE":
-        return [], []
+        return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
 
     if header.state != "ROUND_END":
         return [OutError(code="BAD_STATE", message=f"Cannot vote_next in state {header.state}")], []

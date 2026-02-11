@@ -4,6 +4,9 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from app.store.models import DrawOp
+from app.domain.common.ops import validate_draw_op
+from app.domain.lifecycle.handlers import _auto_expire_single_round
+from app.domain.vs.rules import should_auto_split_stroke
 from app.transport.protocols import (
     InDrawOp,
     OutError,
@@ -27,9 +30,13 @@ async def handle_single_draw_op(*, app, room_code: str, pid: Optional[str], msg:
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message="Room not found")], []
     if header.mode != "SINGLE":
-        return [], []
+        return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
     if header.state != "IN_ROUND":
         return [OutError(code="BAD_STATE", message=f"Cannot draw in state {header.state}")], []
+
+    timeout_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    if timeout_events:
+        return [OutError(code="ROUND_ENDED", message="Round timed out")], timeout_events
 
     game = await repo.get_game(room_code)
     if game.get("phase") != "DRAW":
@@ -43,12 +50,35 @@ async def handle_single_draw_op(*, app, room_code: str, pid: Optional[str], msg:
     if strokes_left <= 0:
         return [OutError(code="STROKE_LIMIT", message="No strokes left")], []
 
+    op_data = msg.op or {}
+    ok, op_type, err_code, err_msg = validate_draw_op(op_data)
+    if not ok:
+        return [OutError(code=err_code, message=err_msg)], []
+
+    # Auto-split check for long strokes (line only)
+    if op_type == "line":
+        pts = None
+        if isinstance(op_data.get("p"), dict):
+            pts = op_data["p"].get("pts")
+        if pts is None:
+            pts = op_data.get("pts")
+        pts = pts or []
+        start_ts = op_data.get("start_ts", ts)
+        points_for_check = [{"x": p[0], "y": p[1]} for p in pts if isinstance(p, (list, tuple)) and len(p) == 2]
+        if should_auto_split_stroke(points_for_check, start_ts, ts):
+            return [
+                OutError(
+                    code="STROKE_TOO_LONG",
+                    message="Stroke too long (exceeds duration or point limit).",
+                )
+            ], []
+
     strokes_left -= 1
     await repo.set_game_fields(room_code, strokes_left=strokes_left)
 
     op = DrawOp(
-        t=msg.op.get("t", "line"),
-        p=msg.op.get("p", msg.op),
+        t=op_type,
+        p=op_data.get("p", op_data),
         ts=ts,
         by=pid,
     )

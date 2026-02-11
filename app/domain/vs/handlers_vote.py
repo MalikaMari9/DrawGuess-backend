@@ -72,6 +72,7 @@ async def handle_vs_vote_next(*, app, room_code: str, pid: Optional[str], msg: I
         await repo.set_roles(room_code, {})
         for p in players:
             await repo.update_player_fields(room_code, p.pid, role=None)
+        await repo.clear_team(room_code, new_gm_pid)
 
         await repo.set_game_fields(
             room_code,

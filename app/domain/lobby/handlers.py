@@ -75,6 +75,7 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
     if gm_pid is None and connected:
         gm_pid = random.choice(connected).pid
         await repo.update_room_fields(room_code, gm_pid=gm_pid)
+        await repo.clear_team(room_code, gm_pid)
 
     # VS mode: auto-assign drawers/guessers and move straight to CONFIG
     if header.mode == "VS":
@@ -83,6 +84,7 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
         gm_pid = gm_pid or (random.choice(connected).pid if connected else None)
         if gm_pid and header.gm_pid is None:
             await repo.update_room_fields(room_code, gm_pid=gm_pid)
+            await repo.clear_team(room_code, gm_pid)
 
         # keep existing teams if already assigned (reconnect safety)
         team_a = await repo.get_team_members(room_code, "A")
@@ -95,9 +97,9 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
             team_b_pids = [p.pid for p in pool[mid:]]
 
             for pid_a in team_a_pids:
-                await repo.set_team(room_code, pid_a, "A")
+                await repo.set_team(room_code, pid_a, "A", gm_pid=gm_pid)
             for pid_b in team_b_pids:
-                await repo.set_team(room_code, pid_b, "B")
+                await repo.set_team(room_code, pid_b, "B", gm_pid=gm_pid)
 
         roles, error = await auto_assign_vs_roles(repo, room_code, gm_pid)
         if error:

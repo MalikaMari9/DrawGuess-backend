@@ -13,6 +13,7 @@ from app.transport.protocols import (
     OutRoundEnd,
 )
 from app.util.timeutil import now_ts
+from app.domain.lifecycle.handlers import _auto_expire_single_round
 
 Outgoing = List[object]
 Result = Tuple[Outgoing, Outgoing]
@@ -33,13 +34,17 @@ async def handle_single_guess(*, app, room_code: str, pid: Optional[str], msg: I
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message="Room not found")], []
     if header.mode != "SINGLE":
-        return [], []
+        return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
     if header.state != "IN_ROUND":
         return [OutError(code="NOT_IN_ROUND", message="Game not started")], []
 
+    timeout_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    if timeout_events:
+        return [OutError(code="ROUND_ENDED", message="Round timed out")], timeout_events
+
     game = await repo.get_game(room_code)
-    if game.get("phase") != "GUESS":
-        return [OutError(code="BAD_PHASE", message="Not in GUESS phase")], []
+    if game.get("phase") not in ("GUESS", "DRAW"):
+        return [OutError(code="BAD_PHASE", message="Not in DRAW or GUESS phase")], []
 
     player = await repo.get_player(room_code, pid)
     if player is None:
@@ -65,6 +70,8 @@ async def handle_single_guess(*, app, room_code: str, pid: Optional[str], msg: I
     to_room: List[object] = [chat_ev, result_ev]
 
     if correct:
+        from app.domain.common.roles import clear_all_roles
+        await clear_all_roles(repo, room_code)
         # End round -> VOTING
         await repo.vote_next_clear(room_code)
         await repo.set_game_fields(

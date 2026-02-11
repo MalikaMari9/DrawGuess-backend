@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from app.domain.common.validation import is_drawer
 from .handlers_common import Result
-from app.domain.vs.rules import can_sabotage, SABOTAGE_COOLDOWN_SEC, SABOTAGE_COST_STROKES
+from app.domain.vs.rules import SABOTAGE_COOLDOWN_SEC, SABOTAGE_COST_STROKES, SABOTAGE_DISABLE_LAST_SEC
 from app.store.models import DrawOp
 from app.transport.protocols import OutBudgetUpdate, OutError, OutOpBroadcast, OutSabotageUsed, InSabotage
 from app.util.timeutil import now_ts
@@ -52,30 +52,13 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         return [OutError(code="INVALID_TARGET", message="Cannot sabotage own team")], []
 
     # Check cooldown
-    cooldown_data = await repo.get_cooldown(room_code)
-    cooldown_key = f"sabotage_next_ts_{player.team}"
-    cooldown_until = cooldown_data.get(cooldown_key, 0)
-
     round_cfg = await repo.get_round_config(room_code)
     round_start_ts = round_cfg.get("round_started_at", ts)
     round_duration_sec = round_cfg.get("time_limit_sec", 300)
 
-    allowed, error = can_sabotage(cooldown_until, round_start_ts, round_duration_sec, ts)
-    if not allowed:
-        return [OutError(code="SABOTAGE_BLOCKED", message=error)], []
-
-    # Check budget (costs 1 stroke from own team)
-    budget = await repo.get_budget(room_code)
-    own_team_budget = budget.get(player.team, 0)
-    if own_team_budget < SABOTAGE_COST_STROKES:
-        return [OutError(code="INSUFFICIENT_BUDGET", message="Not enough strokes for sabotage")], []
-
-    # Consume budget
-    await repo.set_budget_fields(room_code, **{player.team: own_team_budget - SABOTAGE_COST_STROKES})
-
-    # Set cooldown
-    new_cooldown_until = ts + SABOTAGE_COOLDOWN_SEC
-    await repo.set_cooldown_fields(room_code, **{cooldown_key: new_cooldown_until})
+    # Only enforce "last 30 seconds" here; cooldown is handled atomically in Redis
+    if ts >= (round_start_ts + round_duration_sec - SABOTAGE_DISABLE_LAST_SEC):
+        return [OutError(code="SABOTAGE_BLOCKED", message="Sabotage disabled in last 30 seconds of round")], []
 
     # Validate sabotage operation (must be a valid draw operation: line or circle)
     op_data = msg.op or {}
@@ -99,6 +82,20 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         if op_payload.get("cx") is None or op_payload.get("cy") is None or op_payload.get("r") is None:
             return [OutError(code="INVALID_SABOTAGE", message="Sabotage circle requires cx, cy and r")], []
 
+    # Atomic budget+cooldown check/update
+    new_cooldown_until = ts + SABOTAGE_COOLDOWN_SEC
+    ok, reason, cooldown_until, _remaining = await repo.use_sabotage(
+        room_code,
+        player.team,
+        cost=SABOTAGE_COST_STROKES,
+        now_ts=ts,
+        cooldown_until=new_cooldown_until,
+    )
+    if not ok:
+        if reason == "COOLDOWN":
+            return [OutError(code="SABOTAGE_BLOCKED", message="Sabotage on cooldown")], []
+        return [OutError(code="INSUFFICIENT_BUDGET", message="Not enough strokes for sabotage")], []
+
     # Create sabotage operation (one stroke on opponent's canvas)
     draw_op = DrawOp(
         t=op_type,
@@ -116,6 +113,6 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     budget_after = await repo.get_budget(room_code)
     return [], [
         OutOpBroadcast(op=draw_op.model_dump(), canvas=msg.target, by=pid),
-        OutSabotageUsed(by=pid, target=msg.target, cooldown_until=new_cooldown_until),
+        OutSabotageUsed(by=pid, target=msg.target, cooldown_until=cooldown_until),
         OutBudgetUpdate(budget=budget_after),
     ]

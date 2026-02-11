@@ -27,9 +27,7 @@ from app.transport.protocols import (
     InSabotage,
     InVoteNext,
     InModeration,
-    InSnapshot,
-    InHeartbeat,
-    InLeave,
+    InEndRound,
 )
 from app.domain.lifecycle.handlers import (
     handle_create_room,
@@ -59,6 +57,7 @@ from app.domain.single.handlers import (
     handle_single_phase_tick,
     handle_single_vote_next,
 )
+from app.domain.common.end_round import handle_end_round
 from app.domain.common.validation import is_muted
 from app.util.timeutil import now_ts
 
@@ -138,6 +137,10 @@ async def dispatch_message(
 
     if isinstance(msg, InModeration):
         to_sender, to_room = await handle_moderation(app=app, room_code=room_code, pid=pid, msg=msg)
+        return _dump(to_sender), _dump(to_room)
+
+    if isinstance(msg, InEndRound):
+        to_sender, to_room = await handle_end_round(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
 
     # ---- SINGLE: GM config / start ----

@@ -84,6 +84,9 @@ class InSabotage(InBase):
     target: Team
     op: Dict[str, Any]
 
+class InEndRound(InBase):
+    type: Literal["end_round"] = "end_round"
+
 class InModeration(InBase):
     type: Literal["moderation"] = "moderation"
     action: Literal["warn", "mute", "kick"]
@@ -147,6 +150,7 @@ IncomingMessage = Union[
     InVoteNext,
     InPhaseTick,
     InSabotage,
+    InEndRound,
     InModeration,
     InSetTeam,
     InStartRolePick,
@@ -231,6 +235,7 @@ _INCOMING_BY_TYPE = {
     "vote_next": InVoteNext,
     "phase_tick": InPhaseTick,
     "sabotage": InSabotage,
+    "end_round": InEndRound,
     "moderation": InModeration,
     "set_team": InSetTeam,
     "start_role_pick": InStartRolePick,

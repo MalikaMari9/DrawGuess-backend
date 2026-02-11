@@ -7,14 +7,14 @@ The server is **authoritative**: it validates actions, updates Redis, and broadc
 
 ---
 
-## Why WebSockets (not REST routes)?
+## Why WebSockets (not REST routes)"
 This game needs real-time behavior:
 - drawing strokes streamed live
 - join/leave updates instantly
 - round state / role changes broadcasted to everyone
 
 REST endpoints are not ideal for this.  
-So our “API” is a **WebSocket message protocol**.
+So our "API" is a **WebSocket message protocol**.
 
 ---
 
@@ -64,7 +64,7 @@ Common shared utilities:
 ---
 
 ### 3) `app/store/` — Redis Store Layer (NO game rules)
-Redis is our “truth store” for room state (ephemeral, TTL-based).
+Redis is our "truth store" for room state (ephemeral, TTL-based).
 
 **Responsibilities**
 - Implement Redis keys (key naming)
@@ -77,7 +77,7 @@ Key files:
 - `models.py` → stored JSON models/schemas
 
 **What NOT to do here**
-- No “if player is GM then…” rules
+- No "if player is GM then…" rules
 - No scoring
 - No state transitions
 Those live in `domain/`.

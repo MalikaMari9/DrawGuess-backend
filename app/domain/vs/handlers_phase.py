@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .handlers_common import Result, transition_guess_to_voting
+from .handlers_common import Result, transition_guess_to_draw
 from app.transport.protocols import OutBudgetUpdate, OutError, OutPhaseChanged, InPhaseTick, Phase
 from app.util.timeutil import now_ts
 
@@ -37,6 +37,15 @@ async def handle_vs_phase_tick(*, app, room_code: str, pid: Optional[str], msg: 
     stroke_limit = round_cfg.get("strokes_per_phase", 3)  # Default within 3-5
     guess_window_sec = round_cfg.get("guess_window_sec", 10)
 
+    # Enforce round time limit
+    round_end_at_raw = game.get("round_end_at", 0)
+    try:
+        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
+    except (TypeError, ValueError):
+        round_end_at = 0
+    if round_end_at and ts >= round_end_at:
+        return [OutError(code="ROUND_ENDED", message="Round time limit reached")], []
+
     if current_phase == "GUESS":
         guess_end_at_raw = game.get("guess_end_at", 0)
         try:
@@ -45,11 +54,12 @@ async def handle_vs_phase_tick(*, app, room_code: str, pid: Optional[str], msg: 
             guess_end_at = 0
 
         if guess_end_at and ts >= guess_end_at:
-            return await transition_guess_to_voting(
+            return await transition_guess_to_draw(
                 repo=repo,
                 room_code=room_code,
                 ts=ts,
                 round_no=header.round_no,
+                stroke_limit=stroke_limit,
             )
 
     # Only GM can advance phases (or auto-advance based on timer)
@@ -65,24 +75,21 @@ async def handle_vs_phase_tick(*, app, room_code: str, pid: Optional[str], msg: 
             guess_started_at=ts,
             guess_end_at=ts + int(guess_window_sec),
         )
-        # Budget resets for next DRAW phase (not used in GUESS phase, but prepare for next)
-        await repo.set_budget_fields(room_code, A=stroke_limit, B=stroke_limit)
-        budget = await repo.get_budget(room_code)
 
         await repo.update_room_fields(room_code, last_activity=ts)
         await repo.refresh_room_ttl(room_code, mode="VS")
 
         return [], [
             OutPhaseChanged(phase="GUESS", round_no=header.round_no),
-            OutBudgetUpdate(budget=budget),
         ]
 
     if current_phase == "GUESS":
-        return await transition_guess_to_voting(
+        return await transition_guess_to_draw(
             repo=repo,
             room_code=room_code,
             ts=ts,
             round_no=header.round_no,
+            stroke_limit=stroke_limit,
         )
 
     return [OutError(code="BAD_PHASE", message=f"Cannot tick from phase {current_phase}")], []

@@ -16,6 +16,9 @@ from app.transport.protocols import (
     OutPlayerJoined,
     OutPlayerLeft,
     OutPhaseChanged,
+    OutBudgetUpdate,
+    OutRoomStateChanged,
+    OutRoundEnd,
     InCreateRoom,
     InJoin,
     InLeave,
@@ -34,7 +37,7 @@ async def _auto_expire_guess_phase(
     room_code: str,
     header: RoomHeaderStore,
     ts: int,
-) -> Optional[OutgoingEvent]:
+) -> Optional[List[OutgoingEvent]]:
     if header.mode != "VS":
         return None
     if header.state != "IN_ROUND":
@@ -53,6 +56,50 @@ async def _auto_expire_guess_phase(
     if not guess_end_at or ts < guess_end_at:
         return None
 
+    round_cfg = await repo.get_round_config(room_code)
+    stroke_limit = round_cfg.get("strokes_per_phase", 3)
+    await repo.set_game_fields(
+        room_code,
+        phase="DRAW",
+        phase_guesses={},
+        guess_started_at=0,
+        guess_end_at=0,
+    )
+    await repo.set_budget_fields(room_code, A=stroke_limit, B=stroke_limit)
+    await repo.update_room_fields(room_code, last_activity=ts)
+    await repo.refresh_room_ttl(room_code, mode="VS")
+
+    budget = await repo.get_budget(room_code)
+    return [
+        OutPhaseChanged(phase="DRAW", round_no=header.round_no),
+        OutBudgetUpdate(budget=budget),
+    ]
+
+
+async def _auto_expire_vs_round(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.mode != "VS":
+        return []
+    if header.state != "IN_ROUND":
+        return []
+
+    game = await repo.get_game(room_code)
+    round_end_at_raw = game.get("round_end_at", 0)
+    try:
+        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
+    except (TypeError, ValueError):
+        round_end_at = 0
+
+    if not round_end_at or ts < round_end_at:
+        return []
+
+    from app.domain.common.roles import clear_all_roles
+    await clear_all_roles(repo, room_code)
     await repo.vote_next_clear(room_code)
     await repo.set_game_fields(
         room_code,
@@ -61,11 +108,68 @@ async def _auto_expire_guess_phase(
         votes_next={},
         guess_started_at=0,
         guess_end_at=0,
+        winner_team="",
+        winner_pid="",
+        end_reason="TIMEOUT",
+        round_end_at=ts,
     )
-    await repo.update_room_fields(room_code, last_activity=ts)
+    await repo.update_room_fields(room_code, state="ROUND_END", last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
 
-    return OutPhaseChanged(phase="VOTING", round_no=header.round_no)
+    round_cfg = await repo.get_round_config(room_code)
+    word = round_cfg.get("secret_word", "")
+
+    return [
+        OutRoomStateChanged(state="ROUND_END"),
+        OutPhaseChanged(phase="VOTING", round_no=header.round_no),
+        OutRoundEnd(winner=None, word=word, round_no=header.round_no),
+    ]
+
+
+async def _auto_expire_single_round(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.mode != "SINGLE":
+        return []
+    if header.state != "IN_ROUND":
+        return []
+
+    game = await repo.get_game(room_code)
+    round_end_at_raw = game.get("round_end_at", 0)
+    try:
+        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
+    except (TypeError, ValueError):
+        round_end_at = 0
+
+    if not round_end_at or ts < round_end_at:
+        return []
+
+    from app.domain.common.roles import clear_all_roles
+    await clear_all_roles(repo, room_code)
+    await repo.vote_next_clear(room_code)
+    await repo.set_game_fields(
+        room_code,
+        phase="VOTING",
+        winner_pid="",
+        end_reason="TIMEOUT",
+        round_end_at=ts,
+        votes_next={},
+    )
+    await repo.update_room_fields(room_code, state="ROUND_END", last_activity=ts)
+    await repo.refresh_room_ttl(room_code, mode="SINGLE")
+
+    round_cfg = await repo.get_round_config(room_code)
+    word = round_cfg.get("secret_word", "")
+
+    return [
+        OutRoomStateChanged(state="ROUND_END"),
+        OutPhaseChanged(phase="VOTING", round_no=header.round_no),
+        OutRoundEnd(winner=None, word=word, round_no=header.round_no),
+    ]
 
 
 def _gen_room_code(n: int = 6) -> str:
@@ -255,12 +359,20 @@ async def handle_snapshot(*, app, room_code: str, pid: Optional[str], msg: InSna
         return [OutError(code="ROOM_NOT_FOUND", message=f"Room {room_code} not found")], []
 
     ts = now_ts()
-    phase_event = await _auto_expire_guess_phase(repo=repo, room_code=room_code, header=header, ts=ts)
-    if phase_event:
+    vs_round_events = await _auto_expire_vs_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    phase_events: list[OutgoingEvent] = []
+    if not vs_round_events:
+        phase_events = await _auto_expire_guess_phase(repo=repo, room_code=room_code, header=header, ts=ts) or []
+    single_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    if phase_events or single_events or vs_round_events:
         header = await repo.get_room_header(room_code) or header
 
     snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=pid, redact_secret=True)
-    return [snap], [phase_event] if phase_event else []
+    events = []
+    events.extend(vs_round_events)
+    events.extend(phase_events)
+    events.extend(single_events)
+    return [snap], events
 
 
 async def handle_reconnect(*, app, room_code: str, pid: Optional[str], msg: InReconnect) -> Result:
@@ -307,14 +419,22 @@ async def handle_heartbeat(*, app, room_code: str, pid: Optional[str], msg: InHe
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message=f"Room {room_code} not found")], []
 
-    phase_event = await _auto_expire_guess_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+    vs_round_events = await _auto_expire_vs_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    phase_events: list[OutgoingEvent] = []
+    if not vs_round_events:
+        phase_events = await _auto_expire_guess_phase(repo=repo, room_code=room_code, header=header, ts=ts) or []
+    single_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
 
     await repo.set_player_connected(room_code, pid, True, ts)
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     # Keep heartbeat quiet (no broadcast spam)
-    return [], [phase_event] if phase_event else []
+    events = []
+    events.extend(vs_round_events)
+    events.extend(phase_events)
+    events.extend(single_events)
+    return [], events
 
 
 async def handle_leave(*, app, room_code: str, pid: Optional[str], msg: InLeave) -> Result:

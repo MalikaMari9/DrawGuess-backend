@@ -33,7 +33,7 @@ async def handle_single_set_round_config(*, app, room_code: str, pid: Optional[s
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message="Room not found")], []
     if header.mode != "SINGLE":
-        return [], []
+        return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
 
     player = await repo.get_player(room_code, pid)
     if not player or getattr(player, "role", None) != "gm":
