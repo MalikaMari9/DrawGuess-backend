@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
 from app.settings import get_settings
 from app.store.redis_repo import RedisRepo
+from app.transport.admin import router as admin_router
 from app.transport.ws import router as ws_router
 from app.transport.ws_manager import WSManager
 
@@ -13,6 +15,17 @@ from app.transport.ws_manager import WSManager
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.APP_NAME)
+    allowed_origins = [o.strip() for o in settings.WS_ALLOWED_ORIGINS.split(",") if o.strip()]
+    if "null" not in allowed_origins:
+        allowed_origins.append("null")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -35,6 +48,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "redis": str(pong)}
 
     app.include_router(ws_router)
+    app.include_router(admin_router)
     return app
 
 

@@ -7,7 +7,7 @@ The server is **authoritative**: it validates actions, updates Redis, and broadc
 
 ---
 
-## Why WebSockets (not REST routes)"
+## Why WebSockets (not REST routes)?
 This game needs real-time behavior:
 - drawing strokes streamed live
 - join/leave updates instantly
@@ -20,7 +20,7 @@ So our "API" is a **WebSocket message protocol**.
 
 ## Folder Architecture (3 Layers)
 
-### 1) `app/transport/` — WebSocket Transport Layer (NO game rules)
+### 1) `app/transport/` - WebSocket Transport Layer (NO game rules)
 **Responsibilities**
 - Accept WS connections: `/ws/{room_code}`
 - Parse incoming JSON
@@ -33,37 +33,37 @@ So our "API" is a **WebSocket message protocol**.
 - No direct Redis commands
 
 Key files:
-- `ws.py` → WS endpoint
-- `ws_manager.py` → connection tracking + broadcast helpers
-- `dispatcher.py` → routes message types to correct domain handler
-- `protocols.py` → message/event schemas
+- `ws.py` -> WS endpoint
+- `ws_manager.py` -> connection tracking + broadcast helpers
+- `dispatcher.py` -> routes message types to correct domain handler
+- `protocols.py` -> message/event schemas
 
 ---
 
-### 2) `app/domain/` — Game Domain Layer (ALL game rules live here)
+### 2) `app/domain/` - Game Domain Layer (ALL game rules live here)
 This is the **game engine**.  
 It decides whether an action is allowed and what events to emit.
 
 Modules:
-- `domain/lifecycle/` → create/join/leave/reconnect/snapshot/heartbeat
-- `domain/lobby/` → WAITING state: teams (VS), start conditions, etc.
-- `domain/single/` → SINGLE mode rules (GM, drawer, guessers, budgets, rounds)
-- `domain/vs/` → VS mode rules (two teams, two drawers, phases, sabotage)
+- `domain/lifecycle/` -> create/join/leave/reconnect/snapshot/heartbeat
+- `domain/lobby/` -> WAITING state: teams (VS), start conditions, etc.
+- `domain/single/` -> SINGLE mode rules (GM, drawer, guessers, budgets, rounds)
+- `domain/vs/` -> VS mode rules (two teams, two drawers, phases, sabotage)
 
 Common shared utilities:
-- `domain/common/fsm.py` → RoomState / Phase transitions
-- `domain/common/validation.py` → guard checks (state guards, role guards)
-- `domain/common/events.py` → event objects (to_sender / to_room)
+- `domain/common/fsm.py` -> RoomState / Phase transitions
+- `domain/common/validation.py` -> guard checks (state guards, role guards)
+- `domain/common/events.py` -> event objects (to_sender / to_room)
 
 **Where to implement features**
-- SINGLE features → `domain/single/handlers.py` (+ `rules.py` if needed)
-- VS features → `domain/vs/handlers.py` (+ `rules.py` / `sabotage.py` if needed)
-- Lobby team selection → `domain/lobby/handlers.py`
-- Join/leave snapshots → `domain/lifecycle/handlers.py`
+- SINGLE features -> `domain/single/handlers.py` (+ `rules.py` if needed)
+- VS features -> `domain/vs/handlers.py` (+ `rules.py` / `sabotage.py` if needed)
+- Lobby team selection -> `domain/lobby/handlers.py`
+- Join/leave snapshots -> `domain/lifecycle/handlers.py`
 
 ---
 
-### 3) `app/store/` — Redis Store Layer (NO game rules)
+### 3) `app/store/` - Redis Store Layer (NO game rules)
 Redis is our "truth store" for room state (ephemeral, TTL-based).
 
 **Responsibilities**
@@ -72,12 +72,12 @@ Redis is our "truth store" for room state (ephemeral, TTL-based).
 - Provide atomic operations if needed (budget consume, cooldown checks)
 
 Key files:
-- `redis_keys.py` → key builders (`room:<code>`, `room:<code>:players`, etc.)
-- `redis_repo.py` → clean methods used by domain (e.g. `create_room()`, `add_player()`, `append_op()`)
-- `models.py` → stored JSON models/schemas
+- `redis_keys.py` -> key builders (`room:<code>`, `room:<code>:players`, etc.)
+- `redis_repo.py` -> clean methods used by domain (e.g. `create_room()`, `add_player()`, `append_op()`)
+- `models.py` -> stored JSON models/schemas
 
 **What NOT to do here**
-- No "if player is GM then…" rules
+- No "if player is GM then..." rules
 - No scoring
 - No state transitions
 Those live in `domain/`.
@@ -94,12 +94,12 @@ If you need to store new room state, add it there (not random keys in domain/tra
 ---
 
 ## Message Protocol (high-level)
-Client → server JSON examples:
+Client -> server JSON examples:
 - `{"type":"create_room","mode":"SINGLE","cap":8}`
 - `{"type":"join","name":"Malika"}`
 - `{"type":"snapshot"}`
 
-Server → client JSON examples:
+Server -> client JSON examples:
 - `{"type":"room_created","room_code":"AB12CD","mode":"SINGLE"}`
 - `{"type":"room_snapshot", ... }`
 - `{"type":"player_joined", ... }`

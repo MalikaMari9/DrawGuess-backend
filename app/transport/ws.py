@@ -10,7 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.settings import get_settings
 from app.domain.lifecycle.handlers import handle_disconnect
 from app.transport.dispatcher import dispatch_message
-from app.transport.protocols import OutHello
+from app.transport.protocols import OutError, OutHello
 
 router = APIRouter()
 
@@ -24,28 +24,60 @@ def _is_private_ip(host: str) -> bool:
         return False
 
 
-@router.websocket("/ws/{room_code}")
-async def ws_room(websocket: WebSocket, room_code: str):
+async def _check_origin_or_close(websocket: WebSocket) -> bool:
     settings = get_settings()
-
-    # ---- Origin allowlist (anti cross-site WS) ----
     allowed = {o.strip() for o in settings.WS_ALLOWED_ORIGINS.split(",") if o.strip()}
 
     origin = websocket.headers.get("origin")
     if origin is not None:
         if origin in allowed:
-            pass
-        elif settings.WS_ALLOW_LAN_ORIGINS:
-            # Allow LAN frontend origins like http://192.168.0.101:5173
+            return True
+        if settings.WS_ALLOW_LAN_ORIGINS:
             o = urlparse(origin)
             host = o.hostname or ""
             port = o.port
-            if not (_is_private_ip(host) and port == 5173):
-                await websocket.close(code=1008)  # Policy Violation
-                return
-        else:
-            await websocket.close(code=1008)  # Policy Violation
+            if _is_private_ip(host) and port == 5173:
+                return True
+            await websocket.close(code=1008)
+            return False
+        await websocket.close(code=1008)
+        return False
+    return True
+
+
+@router.websocket("/ws-create")
+async def ws_create(websocket: WebSocket):
+    if not await _check_origin_or_close(websocket):
+        return
+
+    await websocket.accept()
+
+    try:
+        raw = await websocket.receive_json()
+        if not isinstance(raw, dict) or raw.get("type") != "create_room":
+            err = OutError(code="ONLY_CREATE_ROOM", message="ws-create only accepts create_room").model_dump()
+            await websocket.send_json(err)
+            await websocket.close()
             return
+
+        to_sender, _ = await dispatch_message(
+            app=websocket.app,
+            room_code="CREATE",
+            pid=None,
+            raw=raw,
+        )
+        for e in to_sender:
+            await websocket.send_json(e)
+    except WebSocketDisconnect:
+        return
+    finally:
+        await websocket.close()
+
+
+@router.websocket("/ws/{room_code}")
+async def ws_room(websocket: WebSocket, room_code: str):
+    if not await _check_origin_or_close(websocket):
+        return
 
     await websocket.accept()
 

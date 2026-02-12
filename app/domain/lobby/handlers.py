@@ -108,10 +108,11 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
         await repo.update_room_fields(room_code, state="CONFIG", last_activity=ts)
         await repo.refresh_room_ttl(room_code, mode=header.mode)
 
-        return [], [
+        events = [
             OutRoomStateChanged(state="CONFIG"),
             OutRolesAssigned(mode="VS", roles=roles),
         ]
+        return events, events
 
     # SINGLE: auto-assign GM + drawer + guessers, then move to ROLE_PICK
     gm_pid, drawer_pid, guesser_pids = await assign_single_roles(
@@ -125,7 +126,8 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
     await repo.update_room_fields(room_code, state="ROLE_PICK", last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
-    return [], [
+    events = [
         OutRoomStateChanged(state="ROLE_PICK"),
         OutRolesAssigned(mode="SINGLE", roles={"gm_pid": gm_pid, "drawer_pid": drawer_pid, "guesser_pids": guesser_pids}),
     ]
+    return events, events
