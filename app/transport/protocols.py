@@ -122,6 +122,16 @@ class InStartRound(InBase):
     # Optional guess window length (seconds) for VS mode, e.g. 10s.
     guess_window_sec: int = Field(default=10, ge=5, le=60)
 
+# ---- VS (GM config before round) ----
+
+class InSetVsConfig(InBase):
+    """GM sets VS round config (secret word + limits) before start_round."""
+    type: Literal["set_vs_config"] = "set_vs_config"
+    secret_word: str = Field(min_length=1, max_length=50)
+    time_limit_sec: int = Field(default=240, ge=60, le=900)
+    strokes_per_phase: int = Field(default=3, ge=3, le=5)
+    guess_window_sec: int = Field(default=10, ge=5, le=60)
+
 # ---- SINGLE (GM config / start) ----
 
 class InSetRoundConfig(InBase):
@@ -156,6 +166,7 @@ IncomingMessage = Union[
     InStartRolePick,
     InAssignRoles,
     InStartRound,
+    InSetVsConfig,
     InSetRoundConfig,
     InStartGame,
 ]
@@ -241,6 +252,7 @@ _INCOMING_BY_TYPE = {
     "start_role_pick": InStartRolePick,
     "assign_roles": InAssignRoles,
     "start_round": InStartRound,
+    "set_vs_config": InSetVsConfig,
     "set_round_config": InSetRoundConfig,
     "start_game": InStartGame,
 }

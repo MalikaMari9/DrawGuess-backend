@@ -342,6 +342,10 @@ async def handle_join(*, app, room_code: str, pid: Optional[str], msg: InJoin) -
             return [OutError(code="KICKED", message="You have been kicked from this room")], []
         await repo.update_player_fields(room_code, pid, name=msg.name, connected=True, last_seen=ts)
 
+    # Ensure GM has role set (covers reconnects / header gm_pid already set)
+    if header.gm_pid and header.gm_pid == pid:
+        await repo.update_player_fields(room_code, pid, role="gm")
+
     # update activity + ttl
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)

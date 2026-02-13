@@ -43,7 +43,7 @@ async def auto_assign_vs_roles(repo, room_code: str, gm_pid: Optional[str]) -> T
 
     for p in players:
         if p.pid == gm_pid:
-            await repo.update_player_fields(room_code, p.pid, role=None)
+            await repo.update_player_fields(room_code, p.pid, role="gm")
             continue
         if p.pid == drawer_a_pid or p.pid == drawer_b_pid:
             continue

@@ -111,6 +111,12 @@ async def ws_room(websocket: WebSocket, room_code: str):
 
             # broadcast (exclude sender by default to avoid duplicates)
             for e in to_room:
+                if isinstance(e, dict) and "targets" in e:
+                    targets = e.get("targets") or []
+                    payload = {k: v for k, v in e.items() if k != "targets"}
+                    for t in targets:
+                        await wsman.send_to_pid(room_code, t, payload)
+                    continue
                 await wsman.broadcast(room_code, e, exclude_pid=pid)
 
     except WebSocketDisconnect:
@@ -121,6 +127,12 @@ async def ws_room(websocket: WebSocket, room_code: str):
         )
 
         for e in to_room:
+            if isinstance(e, dict) and "targets" in e:
+                targets = e.get("targets") or []
+                payload = {k: v for k, v in e.items() if k != "targets"}
+                for t in targets:
+                    await wsman.send_to_pid(room_code, t, payload)
+                continue
             await wsman.broadcast(room_code, e, exclude_pid=pid)
 
     finally:

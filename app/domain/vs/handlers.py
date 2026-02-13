@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.domain.vs.handlers_common import Result
+from app.domain.vs.handlers_config import handle_vs_set_round_config
 from app.domain.vs.handlers_draw import handle_vs_draw_op
 from app.domain.vs.handlers_guess import handle_vs_guess
 from app.domain.vs.handlers_phase import handle_vs_phase_tick
@@ -13,6 +14,7 @@ from app.domain.vs.handlers_vote import handle_vs_vote_next
 __all__ = [
     "Result",
     "handle_vs_role_pick",
+    "handle_vs_set_round_config",
     "handle_vs_start_round",
     "handle_vs_draw_op",
     "handle_vs_guess",

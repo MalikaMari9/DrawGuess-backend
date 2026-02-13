@@ -19,6 +19,7 @@ from app.transport.protocols import (
     InStartRolePick,
     InAssignRoles,
     InStartRound,
+    InSetVsConfig,
     InSetRoundConfig,
     InStartGame,
     InDrawOp,
@@ -41,6 +42,7 @@ from app.domain.lifecycle.handlers import (
 from app.domain.lobby.handlers import handle_set_team, handle_start_role_pick
 from app.domain.vs.handlers import (
     handle_vs_role_pick,
+    handle_vs_set_round_config,
     handle_vs_start_round,
     handle_vs_draw_op,
     handle_vs_guess,
@@ -148,6 +150,11 @@ async def dispatch_message(
         to_sender, to_room = await handle_single_set_round_config(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
 
+    # ---- VS: GM config (pre-round) ----
+    if isinstance(msg, InSetVsConfig):
+        to_sender, to_room = await handle_vs_set_round_config(app=app, room_code=room_code, pid=pid, msg=msg)
+        return _dump(to_sender), _dump(to_room)
+
     if isinstance(msg, InStartGame):
         to_sender, to_room = await handle_single_start_game(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
@@ -229,5 +236,12 @@ async def dispatch_message(
 def _dump(events: List[OutgoingEvent]) -> List[Dict[str, Any]]:
     """
     Convert pydantic events -> JSON dicts.
+    Pass through raw dicts (e.g., targeted events).
     """
-    return [e.model_dump() for e in events]
+    out: List[Dict[str, Any]] = []
+    for e in events:
+        if hasattr(e, "model_dump"):
+            out.append(e.model_dump())
+        else:
+            out.append(e)  # already a dict
+    return out

@@ -87,6 +87,10 @@ async def handle_vs_role_pick(*, app, room_code: str, pid: Optional[str], msg: I
         await repo.update_player_fields(room_code, drawer_b_pid, role="drawerB")
         roles["drawerB"] = drawer_b_pid
 
+    # Ensure GM keeps explicit role label.
+    if header.gm_pid:
+        await repo.update_player_fields(room_code, header.gm_pid, role="gm")
+
     # Assign guessers to all remaining players (excluding GM and drawers)
     for p in players:
         # Skip GM - GM has no team/role assignment
