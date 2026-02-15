@@ -39,3 +39,4 @@ Thumbs.db
 # ---- Local dev artifacts ----
 *.sqlite3
 *.db
+*.pyc

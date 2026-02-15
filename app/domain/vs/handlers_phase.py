@@ -3,15 +3,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .handlers_common import Result, transition_guess_to_draw
-from app.transport.protocols import OutBudgetUpdate, OutError, OutPhaseChanged, InPhaseTick, Phase
+from .handlers_common import Result, transition_draw_to_guess, transition_guess_to_draw
+from app.transport.protocols import OutError, InPhaseTick, Phase
 from app.util.timeutil import now_ts
 
 
 async def handle_vs_phase_tick(*, app, room_code: str, pid: Optional[str], msg: InPhaseTick) -> Result:
     """
     Advance phase in VS mode.
-    DRAW -> GUESS -> DRAW (repeat until correct guess or round ends).
+    DRAW -> GUESS -> DRAW (repeat until round end or correct guess).
     """
     if not pid:
         return [OutError(code="NO_PID", message="Missing pid")], []
@@ -34,7 +34,7 @@ async def handle_vs_phase_tick(*, app, room_code: str, pid: Optional[str], msg: 
 
     # Get GM-configured settings from round config
     round_cfg = await repo.get_round_config(room_code)
-    stroke_limit = round_cfg.get("strokes_per_phase", 3)  # Default within 3-5
+    stroke_limit = int(round_cfg.get("strokes_per_phase", 3))
     guess_window_sec = round_cfg.get("guess_window_sec", 10)
 
     # Enforce round time limit
@@ -67,21 +67,18 @@ async def handle_vs_phase_tick(*, app, room_code: str, pid: Optional[str], msg: 
         return [OutError(code="NOT_GM", message="Only GameMaster can advance phases")], []
 
     if current_phase == "DRAW":
-        # Transition to GUESS phase
-        await repo.set_game_fields(
-            room_code,
-            phase="GUESS",
-            phase_guesses={},
-            guess_started_at=ts,
-            guess_end_at=ts + int(guess_window_sec),
+        budget = await repo.get_budget(room_code)
+        budget_a = int(budget.get("A", 0))
+        budget_b = int(budget.get("B", 0))
+        if budget_a > 0 or budget_b > 0:
+            return [OutError(code="DRAW_NOT_DONE", message="Cannot enter GUESS while draw budget remains")], []
+        return await transition_draw_to_guess(
+            repo=repo,
+            room_code=room_code,
+            ts=ts,
+            round_no=header.round_no,
+            guess_window_sec=int(guess_window_sec),
         )
-
-        await repo.update_room_fields(room_code, last_activity=ts)
-        await repo.refresh_room_ttl(room_code, mode="VS")
-
-        return [], [
-            OutPhaseChanged(phase="GUESS", round_no=header.round_no),
-        ]
 
     if current_phase == "GUESS":
         return await transition_guess_to_draw(

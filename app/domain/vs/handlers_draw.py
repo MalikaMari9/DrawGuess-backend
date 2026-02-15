@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from app.domain.common.validation import is_drawer
 from app.domain.common.ops import validate_draw_op
-from .handlers_common import Result
+from .handlers_common import Result, transition_draw_to_guess
 from app.domain.vs.rules import should_auto_split_stroke
 from app.store.models import DrawOp
 from app.transport.protocols import OutBudgetUpdate, OutError, OutOpBroadcast, InDrawOp
@@ -123,9 +123,27 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
 
-    # Broadcast to room
     budget_after = await repo.get_budget(room_code)
-    return [], [
+    to_room = [
         OutOpBroadcast(op=draw_op.model_dump(), canvas=canvas, by=pid),
         OutBudgetUpdate(budget=budget_after),
     ]
+
+    # Move to GUESS only when both teams spent all configured budget.
+    budget_a = int(budget_after.get("A", 0))
+    budget_b = int(budget_after.get("B", 0))
+    if budget_a <= 0 and budget_b <= 0:
+        game_after = await repo.get_game(room_code)
+        if game_after.get("phase") == "DRAW":
+            round_cfg = await repo.get_round_config(room_code)
+            guess_window_sec = int(round_cfg.get("guess_window_sec", 10))
+            _, phase_events = await transition_draw_to_guess(
+                repo=repo,
+                room_code=room_code,
+                ts=ts,
+                round_no=header.round_no,
+                guess_window_sec=guess_window_sec,
+            )
+            to_room.extend(phase_events)
+
+    return [], to_room
