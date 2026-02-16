@@ -12,7 +12,7 @@ from app.util.timeutil import now_ts
 async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGuess) -> Result:
     """
     Handle guesses in VS mode.
-    Each team gets one guess per phase.
+    Each guesser gets one guess per GUESS phase.
     """
     if not pid:
         return [OutError(code="NO_PID", message="Missing pid")], []
@@ -74,10 +74,10 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
     if player.team is None:
         return [OutError(code="NO_TEAM", message="Player has no team")], []
 
-    # Check if team already guessed this phase
+    # Check if this player already guessed this phase
     phase_guesses = game.get("phase_guesses", {})
-    if player.team in phase_guesses:
-        return [OutError(code="ALREADY_GUESSED", message="Your team already guessed this phase")], []
+    if pid in phase_guesses:
+        return [OutError(code="ALREADY_GUESSED", message="You already guessed this phase")], []
 
     # Get word
     round_cfg = await repo.get_round_config(room_code)
@@ -89,7 +89,8 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
     correct = guess_text == word
 
     # Record guess
-    phase_guesses[player.team] = {
+    phase_guesses[pid] = {
+        "team": player.team,
         "text": msg.text,
         "by": pid,
         "ts": ts,
@@ -138,20 +139,27 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
             OutPhaseChanged(phase="VOTING", round_no=header.round_no),
         ]
 
-    # If both teams guessed and both are wrong, return to DRAW with refreshed phase budget.
-    if "A" in phase_guesses and "B" in phase_guesses:
-        a_correct = bool(phase_guesses.get("A", {}).get("correct"))
-        b_correct = bool(phase_guesses.get("B", {}).get("correct"))
-        if not a_correct and not b_correct:
-            stroke_limit = int(round_cfg.get("strokes_per_phase", 3))
-            _, to_room = await transition_guess_to_draw(
-                repo=repo,
-                room_code=room_code,
-                ts=ts,
-                round_no=header.round_no,
-                stroke_limit=stroke_limit,
-            )
-            return [], [OutGuessResult(correct=False, team=player.team, text=msg.text, by=pid), *to_room]
+    # If at least one wrong guess has been made by each team (and no one was correct),
+    # return to DRAW with refreshed phase budget.
+    guessed_a_wrong = False
+    guessed_b_wrong = False
+    for g in phase_guesses.values():
+        g_team = g.get("team")
+        g_correct = bool(g.get("correct"))
+        if g_team == "A" and not g_correct:
+            guessed_a_wrong = True
+        if g_team == "B" and not g_correct:
+            guessed_b_wrong = True
+    if guessed_a_wrong and guessed_b_wrong:
+        stroke_limit = int(round_cfg.get("strokes_per_phase", 3))
+        _, to_room = await transition_guess_to_draw(
+            repo=repo,
+            room_code=room_code,
+            ts=ts,
+            round_no=header.round_no,
+            stroke_limit=stroke_limit,
+        )
+        return [], [OutGuessResult(correct=False, team=player.team, text=msg.text, by=pid), *to_room]
 
     # Otherwise, just broadcast guess result and stay in GUESS.
     return [], [OutGuessResult(correct=False, team=player.team, text=msg.text, by=pid)]

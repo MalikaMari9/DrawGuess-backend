@@ -63,9 +63,15 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
         return [OutError(code="NOT_DRAWER", message="Only drawer can draw")], []
 
     # Parse draw operation (compact format as per spec)
-    # Example line op:
-    # {"t":"line","pid":"p_x","tool":"line","c":"#000","w":3,"pts":[[x,y],...],"sab":0}
-    op_data = msg.op or {}
+    # Accept both:
+    # {"t":"line","pts":[...],...}
+    # {"t":"line","p":{"pts":[...],...}}
+    raw_op = msg.op or {}
+    op_data: Dict[str, Any] = dict(raw_op)
+    nested = raw_op.get("p")
+    if isinstance(nested, dict):
+        op_data.update(nested)
+    op_data.pop("p", None)
     ok, op_type, err_code, err_msg = validate_draw_op(op_data)
     if not ok:
         return [OutError(code=err_code, message=err_msg)], []

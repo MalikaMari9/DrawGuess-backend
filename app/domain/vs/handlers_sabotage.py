@@ -61,7 +61,15 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         return [OutError(code="SABOTAGE_BLOCKED", message="Sabotage disabled in last 30 seconds of round")], []
 
     # Validate sabotage operation (must be a valid draw operation: line or circle)
-    op_data = msg.op or {}
+    # Accept both:
+    # {"t":"line","pts":[...],...}
+    # {"t":"line","p":{"pts":[...],...}}
+    raw_op = msg.op or {}
+    op_data: Dict[str, Any] = dict(raw_op)
+    nested = raw_op.get("p")
+    if isinstance(nested, dict):
+        op_data.update(nested)
+    op_data.pop("p", None)
     op_type = op_data.get("t", "line")
 
     # Sabotage can use line or circle tool

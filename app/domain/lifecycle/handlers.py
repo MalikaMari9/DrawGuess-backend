@@ -228,11 +228,14 @@ async def _build_snapshot(
             round_cfg = {k: v for k, v in round_cfg.items() if k != "secret_word"}
     game = await repo.get_game(room_code)
     
-    # Include budget in game state for VS mode
+    # Include budget/cooldown in game state for VS mode
     if header.mode == "VS":
         budget = await repo.get_budget(room_code)
         if budget:
             game["budget"] = budget
+        cooldown = await repo.get_cooldown(room_code)
+        if cooldown:
+            game["cooldown"] = cooldown
 
     # ops depend on mode
     ops_out: List[Dict[str, Any]] = []

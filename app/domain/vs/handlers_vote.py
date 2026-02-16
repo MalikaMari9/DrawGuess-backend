@@ -35,6 +35,9 @@ async def handle_vs_vote_next(*, app, room_code: str, pid: Optional[str], msg: I
     if player is None:
         return [OutError(code="PLAYER_NOT_FOUND", message="Player not found")], []
 
+    if pid == header.gm_pid:
+        return [OutError(code="NOT_ALLOWED", message="GameMaster cannot vote")], []
+
     if player.team is None:
         return [OutError(code="NO_TEAM", message="Player has no team")], []
 
@@ -43,6 +46,15 @@ async def handle_vs_vote_next(*, app, room_code: str, pid: Optional[str], msg: I
         return [OutError(code="BAD_PHASE", message="Vote next is only allowed in VOTING phase")], []
 
     votes, eligible = await record_vote_all_active(repo=repo, room_code=room_code, pid=pid, vote=msg.vote)
+
+    # VS voting is for active non-GM players with a team only.
+    players = await repo.list_players(room_code)
+    player_by_pid = {p.pid: p for p in players}
+    eligible = [
+        p for p in eligible
+        if p != header.gm_pid and getattr(player_by_pid.get(p), "team", None) in ("A", "B")
+    ]
+
     if pid not in eligible:
         return [OutError(code="NOT_ACTIVE", message="Only active players can vote")], []
     if not eligible:
