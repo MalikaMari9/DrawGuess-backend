@@ -75,6 +75,15 @@ async def handle_single_guess(*, app, room_code: str, pid: Optional[str], msg: I
     to_room: List[object] = [chat_ev, result_ev]
 
     if correct:
+        drawer_pid = str(game.get("drawer_pid") or "")
+        guesser_points = int(getattr(player, "points", 0) or 0)
+        await repo.update_player_fields(room_code, pid, points=guesser_points + 1)
+        if drawer_pid:
+            drawer = await repo.get_player(room_code, drawer_pid)
+            if drawer is not None:
+                drawer_points = int(getattr(drawer, "points", 0) or 0)
+                await repo.update_player_fields(room_code, drawer_pid, points=drawer_points + 1)
+
         from app.domain.common.roles import clear_all_roles
         await clear_all_roles(repo, room_code)
         await repo.vote_next_clear(room_code)
