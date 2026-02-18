@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 
 from app.domain.vs.rules import (

@@ -107,5 +107,5 @@ async def test_single_start_game_requires_config():
 
     repo.round_cfg = {"secret_word": "apple", "stroke_limit": 10, "time_limit_sec": 240}
     to_sender, to_room = await handle_single_start_game(app=app, room_code="R1", pid="gm", msg=Msg())
-    assert repo.header.state == "IN_ROUND"
+    assert repo.header.state == "IN_GAME"
     assert any(getattr(e, "type", "") == "phase_changed" for e in to_room)

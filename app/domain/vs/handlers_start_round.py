@@ -1,31 +1,30 @@
-# app/domain/vs/handlers_start_round.py
 from __future__ import annotations
 
 from typing import Optional
 
-from .handlers_common import Result
-from app.domain.vs.roles import auto_assign_vs_roles
 from app.domain.vs.rules import validate_vs_start_conditions
 from app.transport.protocols import (
     OutBudgetUpdate,
     OutError,
     OutPhaseChanged,
-    OutRolesAssigned,
+    OutRoomSnapshot,
     OutRoomStateChanged,
-    InStartRound,
+    InStartGame,
 )
 from app.util.timeutil import now_ts
 
 
-async def handle_vs_start_round(*, app, room_code: str, pid: Optional[str], msg: InStartRound) -> Result:
-    """
-    Start a VS mode round.
-    GM provides:
-    - secret_word       (hidden from non-GM clients)
-    - time_limit_sec    (drawing phase duration)
-    - strokes_per_phase (3-5 strokes per DRAW phase, per team)
-    - guess_window_sec  (optional GUESS window duration)
 
+async def _snapshot_for(app, room_code: str, *, viewer_pid: Optional[str]) -> OutRoomSnapshot:
+    from app.domain.lifecycle.handlers import _build_snapshot
+    header = await app.state.repo.get_room_header(room_code)
+    mode = header.mode if header else "VS"
+    return await _build_snapshot(app, room_code, mode, viewer_pid=viewer_pid, redact_secret=True)
+
+
+async def handle_vs_start_game(*, app, room_code: str, pid: Optional[str], msg: InStartGame):
+    """
+    Start a VS mode game (round 1) after config is set.
     Game begins with DRAW phase.
     """
     if not pid:
@@ -42,26 +41,20 @@ async def handle_vs_start_round(*, app, room_code: str, pid: Optional[str], msg:
         return [OutError(code="NOT_VS", message="This handler is for VS mode only")], []
 
     if header.state != "CONFIG":
-        return [OutError(code="BAD_STATE", message=f"Cannot start round in state {header.state}")], []
+        return [OutError(code="BAD_STATE", message=f"Cannot start game in state {header.state}")], []
 
-    # Only GM can start round
     if header.gm_pid != pid:
-        return [OutError(code="NOT_GM", message="Only GameMaster can start rounds")], []
+        return [OutError(code="NOT_GM", message="Only GameMaster can start games")], []
 
-    # Validate strokes_per_phase (3-5 as per spec)
-    stroke_limit = msg.strokes_per_phase
-    if stroke_limit < 3 or stroke_limit > 5:
-        return [OutError(code="INVALID_STROKE_LIMIT", message="strokes_per_phase must be between 3 and 5")], []
+    round_cfg = await repo.get_round_config(room_code)
+    secret = (round_cfg.get("secret_word") or "").strip()
+    draw_window_sec = int(round_cfg.get("draw_window_sec") or 0)
+    guess_window_sec = int(round_cfg.get("guess_window_sec") or 0)
+    stroke_limit = int(round_cfg.get("strokes_per_phase") or 0)
+    max_rounds = int(round_cfg.get("max_rounds") or 0)
 
-    # Validate time_limit_sec (basic sanity)
-    time_limit_sec = msg.time_limit_sec
-    if time_limit_sec <= 0:
-        return [OutError(code="INVALID_TIME_LIMIT", message="time_limit_sec must be > 0")], []
-
-    # Validate guess_window_sec (basic sanity)
-    guess_window_sec = msg.guess_window_sec
-    if guess_window_sec <= 0:
-        return [OutError(code="INVALID_GUESS_WINDOW", message="guess_window_sec must be > 0")], []
+    if not secret or draw_window_sec <= 0 or guess_window_sec <= 0 or stroke_limit <= 0 or max_rounds <= 0:
+        return [OutError(code="CONFIG_MISSING", message="GM must set VS config before starting")], []
 
     players = await repo.list_players(room_code)
     teams = {
@@ -69,73 +62,58 @@ async def handle_vs_start_round(*, app, room_code: str, pid: Optional[str], msg:
         "B": await repo.get_team_members(room_code, "B"),
     }
 
-    # Validate start conditions (exclude GM from validation)
     can_start, error = validate_vs_start_conditions(players, teams, gm_pid=header.gm_pid)
     if not can_start:
         return [OutError(code="START_FAILED", message=error)], []
 
-    # Reset roles for the new round (auto-assign drawers/guessers)
-    roles, error = await auto_assign_vs_roles(repo, room_code, header.gm_pid)
-    if error:
-        return [OutError(code="ROLE_ASSIGN_FAILED", message=error)], []
+    game_no = int(header.game_no or 0) + 1
+    round_no = 1
 
-    # Initialize round
-    round_no = header.round_no if header.round_no > 0 else 1
-
-    # Clear any pending "next round" votes
     await repo.vote_next_clear(room_code)
-    await repo.set_game_fields(room_code, votes_next={})
-
-    # Initialize score if missing
-    current_game = await repo.get_game(room_code)
-    if "score" not in current_game:
-        await repo.set_game_fields(room_code, score={"A": 0, "B": 0})
-
-    # Set round config with GM settings (kept server-side; secret_word is never broadcast)
-    await repo.set_round_config(
-        room_code,
-        {
-            "secret_word": msg.secret_word,
-            "round_no": round_no,
-            "round_started_at": ts,
-            "round_end_at": ts + time_limit_sec,
-            "time_limit_sec": time_limit_sec,
-            "strokes_per_phase": stroke_limit,
-            "guess_window_sec": guess_window_sec,
-        },
-    )
-
-    # Initialize budgets with GM-configured strokes_per_phase
-    await repo.set_budget_fields(room_code, A=stroke_limit, B=stroke_limit)
-
-    # Initialize game state with DRAW phase and metadata
     await repo.set_game_fields(
         room_code,
         phase="DRAW",
-        phase_no=1,
+        game_no=game_no,
         round_no=round_no,
-        round_started_at=ts,
-        round_end_at=ts + time_limit_sec,
-        guess_window_sec=guess_window_sec,
-        guess_started_at=0,
+        draw_end_at=ts + draw_window_sec,
         guess_end_at=0,
-        winner_pid="",
+        team_guessed={"A": False, "B": False},
+        team_guess_result={"A": "", "B": ""},
         winner_team="",
+        winner_pid="",
         end_reason="",
+        votes_next={},
+        game_end_at=0,
+        clear_ops_at=0,
     )
 
-    # Clear previous ops
-    await repo.clear_ops(room_code, "VS")
-
-    await repo.update_room_fields(room_code, state="IN_ROUND", round_no=round_no, last_activity=ts)
+    await repo.set_budget_fields(room_code, A=stroke_limit, B=stroke_limit)
+    await repo.update_room_fields(
+        room_code,
+        state="IN_GAME",
+        round_no=round_no,
+        game_no=game_no,
+        last_activity=ts,
+        countdown_end_at=0,
+    )
     await repo.refresh_room_ttl(room_code, mode="VS")
 
     budget = await repo.get_budget(room_code)
-    events = [
-        OutRolesAssigned(mode="VS", roles=roles),
-        OutRoomStateChanged(state="IN_ROUND"),
+    to_sender = [
+        OutRoomStateChanged(state="IN_GAME"),
+        OutPhaseChanged(phase="DRAW", round_no=round_no),
+        OutBudgetUpdate(budget=budget),
+        await _snapshot_for(app, room_code, viewer_pid=pid),
+    ]
+    to_room = [
+        OutRoomStateChanged(state="IN_GAME"),
         OutPhaseChanged(phase="DRAW", round_no=round_no),
         OutBudgetUpdate(budget=budget),
     ]
-    # Send to sender too so GM gets the state change and refreshes snapshot.
-    return events, events
+    players = await repo.list_players(room_code)
+    for p in players:
+        if not getattr(p, "connected", True):
+            continue
+        snap = await _snapshot_for(app, room_code, viewer_pid=p.pid)
+        to_room.append({**snap.model_dump(), "targets": [p.pid]})
+    return to_sender, to_room

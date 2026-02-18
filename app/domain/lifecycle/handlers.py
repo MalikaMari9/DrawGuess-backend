@@ -6,7 +6,7 @@ import string
 from typing import List, Tuple, Optional, Literal, Dict, Any
 
 from app.util.timeutil import now_ts
-from app.store.models import RoomHeaderStore, PlayerStore
+from app.store.models import RoomHeaderStore, PlayerStore, DrawOp
 from app.transport.protocols import (
     Mode,
     OutgoingEvent,
@@ -18,65 +18,24 @@ from app.transport.protocols import (
     OutPhaseChanged,
     OutBudgetUpdate,
     OutRoomStateChanged,
-    OutRoundEnd,
+    OutGameEnd,
+    OutVoteResolved,
+    OutOpBroadcast,
     InCreateRoom,
     InJoin,
     InLeave,
     InHeartbeat,
     InSnapshot,
     InReconnect,
+    InStartGame,
 )
 
 # Returns: (to_sender, to_room)
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
 
 
-async def _auto_expire_guess_phase(
-    *,
-    repo,
-    room_code: str,
-    header: RoomHeaderStore,
-    ts: int,
-) -> Optional[List[OutgoingEvent]]:
-    if header.mode != "VS":
-        return None
-    if header.state != "IN_ROUND":
-        return None
 
-    game = await repo.get_game(room_code)
-    if game.get("phase") != "GUESS":
-        return None
-
-    guess_end_at_raw = game.get("guess_end_at", 0)
-    try:
-        guess_end_at = int(guess_end_at_raw) if guess_end_at_raw else 0
-    except (TypeError, ValueError):
-        guess_end_at = 0
-
-    if not guess_end_at or ts < guess_end_at:
-        return None
-
-    round_cfg = await repo.get_round_config(room_code)
-    stroke_limit = round_cfg.get("strokes_per_phase", 3)
-    await repo.set_game_fields(
-        room_code,
-        phase="DRAW",
-        phase_guesses={},
-        guess_started_at=0,
-        guess_end_at=0,
-    )
-    await repo.set_budget_fields(room_code, A=stroke_limit, B=stroke_limit)
-    await repo.update_room_fields(room_code, last_activity=ts)
-    await repo.refresh_room_ttl(room_code, mode="VS")
-
-    budget = await repo.get_budget(room_code)
-    return [
-        OutPhaseChanged(phase="DRAW", round_no=header.round_no),
-        OutBudgetUpdate(budget=budget),
-    ]
-
-
-async def _auto_expire_vs_round(
+async def _auto_expire_vs_phase(
     *,
     repo,
     room_code: str,
@@ -85,48 +44,14 @@ async def _auto_expire_vs_round(
 ) -> list[OutgoingEvent]:
     if header.mode != "VS":
         return []
-    if header.state != "IN_ROUND":
+    if header.state != "IN_GAME":
         return []
 
-    game = await repo.get_game(room_code)
-    round_end_at_raw = game.get("round_end_at", 0)
-    try:
-        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
-    except (TypeError, ValueError):
-        round_end_at = 0
-
-    if not round_end_at or ts < round_end_at:
-        return []
-
-    from app.domain.common.roles import clear_all_roles
-    await clear_all_roles(repo, room_code)
-    await repo.vote_next_clear(room_code)
-    await repo.set_game_fields(
-        room_code,
-        phase="VOTING",
-        phase_guesses={},
-        votes_next={},
-        guess_started_at=0,
-        guess_end_at=0,
-        winner_team="",
-        winner_pid="",
-        end_reason="TIMEOUT",
-        round_end_at=ts,
-    )
-    await repo.update_room_fields(room_code, state="ROUND_END", last_activity=ts)
-    await repo.refresh_room_ttl(room_code, mode="VS")
-
-    round_cfg = await repo.get_round_config(room_code)
-    word = round_cfg.get("secret_word", "")
-
-    return [
-        OutRoomStateChanged(state="ROUND_END"),
-        OutPhaseChanged(phase="VOTING", round_no=header.round_no),
-        OutRoundEnd(winner=None, word=word, round_no=header.round_no),
-    ]
+    from app.domain.vs.handlers_common import auto_advance_vs_phase
+    return await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
 
 
-async def _auto_expire_single_round(
+async def _auto_expire_single_game(
     *,
     repo,
     room_code: str,
@@ -135,17 +60,17 @@ async def _auto_expire_single_round(
 ) -> list[OutgoingEvent]:
     if header.mode != "SINGLE":
         return []
-    if header.state != "IN_ROUND":
+    if header.state != "IN_GAME":
         return []
 
     game = await repo.get_game(room_code)
-    round_end_at_raw = game.get("round_end_at", 0)
+    game_end_at_raw = game.get("game_end_at", 0)
     try:
-        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
+        game_end_at = int(game_end_at_raw) if game_end_at_raw else 0
     except (TypeError, ValueError):
-        round_end_at = 0
+        game_end_at = 0
 
-    if not round_end_at or ts < round_end_at:
+    if not game_end_at or ts < game_end_at:
         return []
 
     from app.domain.common.roles import clear_all_roles
@@ -156,20 +81,203 @@ async def _auto_expire_single_round(
         phase="VOTING",
         winner_pid="",
         end_reason="TIMEOUT",
-        round_end_at=ts,
+        game_end_at=ts,
         votes_next={},
+        clear_ops_at=ts + 5,
     )
-    await repo.update_room_fields(room_code, state="ROUND_END", last_activity=ts)
+    await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="SINGLE")
 
     round_cfg = await repo.get_round_config(room_code)
     word = round_cfg.get("secret_word", "")
 
     return [
-        OutRoomStateChanged(state="ROUND_END"),
+        OutRoomStateChanged(state="GAME_END"),
         OutPhaseChanged(phase="VOTING", round_no=header.round_no),
-        OutRoundEnd(winner=None, word=word, round_no=header.round_no),
+        OutGameEnd(winner=None, word=word, game_no=header.game_no, round_no=header.round_no, reason="TIMEOUT"),
     ]
+
+
+async def _auto_clear_ops_after_game(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    game = await repo.get_game(room_code)
+    clear_ops_at_raw = game.get("clear_ops_at", 0)
+    try:
+        clear_ops_at = int(clear_ops_at_raw) if clear_ops_at_raw else 0
+    except (TypeError, ValueError):
+        clear_ops_at = 0
+
+    if not clear_ops_at or ts < clear_ops_at:
+        return []
+
+    await repo.clear_ops(room_code, mode=header.mode)
+    await repo.set_game_fields(room_code, clear_ops_at=0)
+
+    events: list[OutgoingEvent] = []
+    clear_op = DrawOp(t="clear", p={}, ts=ts, by="system")
+
+    if header.mode == "VS":
+        for team in ("A", "B"):
+            await repo.append_op_vs(room_code, team, clear_op)
+            events.append(OutOpBroadcast(op=clear_op.model_dump(), canvas=team, by="system"))
+    else:
+        await repo.append_op_single(room_code, clear_op)
+        events.append(OutOpBroadcast(op=clear_op.model_dump(), canvas=None, by="system"))
+
+    return events
+
+
+async def _auto_resolve_vs_vote_window(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.mode != "VS":
+        return []
+    if header.state != "GAME_END":
+        return []
+
+    game = await repo.get_game(room_code)
+    if game.get("phase") != "VOTING":
+        return []
+
+    vote_end_at_raw = game.get("vote_end_at", 0)
+    try:
+        vote_end_at = int(vote_end_at_raw) if vote_end_at_raw else 0
+    except (TypeError, ValueError):
+        vote_end_at = 0
+
+    if not vote_end_at or ts < vote_end_at:
+        return []
+
+    eligible = list(await repo.get_active_pids(room_code))
+    if not eligible:
+        from app.domain.common.roles import strip_identity
+        await strip_identity(repo, room_code)
+        await repo.set_game_fields(room_code, vote_end_at=0, vote_outcome="NO", phase="FINAL")
+        await repo.update_room_fields(room_code, last_activity=ts)
+        await repo.refresh_room_ttl(room_code, mode="VS")
+        ev = OutVoteResolved(outcome="NO", ts=ts, yes_count=0, eligible=0)
+        return [ev]
+
+    votes = game.get("votes_next") or {}
+    if not isinstance(votes, dict):
+        votes = {}
+
+    yes_count = sum(1 for p in eligible if votes.get(p) == "yes")
+    threshold = (len(eligible) // 2) + 1
+
+    if yes_count >= threshold:
+        await repo.set_game_fields(
+            room_code,
+            reset_to_waiting_at=ts + 2,
+            vote_end_at=0,
+            vote_outcome="YES",
+        )
+        await repo.update_room_fields(room_code, last_activity=ts)
+        await repo.refresh_room_ttl(room_code, mode="VS")
+        ev = OutVoteResolved(outcome="YES", ts=ts, yes_count=yes_count, eligible=len(eligible))
+        return [ev]
+
+    from app.domain.common.roles import strip_identity
+    await strip_identity(repo, room_code)
+    await repo.set_game_fields(room_code, phase="FINAL", vote_end_at=0, vote_outcome="NO")
+    await repo.update_room_fields(room_code, last_activity=ts)
+    await repo.refresh_room_ttl(room_code, mode="VS")
+    ev = OutVoteResolved(outcome="NO", ts=ts, yes_count=yes_count, eligible=len(eligible))
+    return [ev]
+
+
+async def _auto_reset_vs_to_waiting_after_vote_yes(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.mode != "VS":
+        return []
+    if header.state != "GAME_END":
+        return []
+
+    game = await repo.get_game(room_code)
+    if game.get("phase") != "VOTING":
+        return []
+
+    reset_at_raw = game.get("reset_to_waiting_at", 0)
+    try:
+        reset_at = int(reset_at_raw) if reset_at_raw else 0
+    except (TypeError, ValueError):
+        reset_at = 0
+
+    if not reset_at or ts < reset_at:
+        return []
+
+    from app.domain.common.roles import strip_identity
+    await strip_identity(repo, room_code)
+    await repo.vote_next_clear(room_code)
+    await repo.clear_round_config(room_code)
+
+    # Keep clear_ops_at intact so the end-screen drawing clears on schedule.
+    clear_ops_at_raw = game.get("clear_ops_at", 0)
+    try:
+        clear_ops_at = int(clear_ops_at_raw) if clear_ops_at_raw else 0
+    except (TypeError, ValueError):
+        clear_ops_at = 0
+
+    await repo.set_game_fields(
+        room_code,
+        phase="",
+        votes_next={},
+        winner_team="",
+        winner_pid="",
+        end_reason="",
+        draw_end_at=0,
+        guess_end_at=0,
+        team_guessed={},
+        team_guess_result={},
+        game_end_at=0,
+        reset_to_waiting_at=0,
+        clear_ops_at=clear_ops_at,
+    )
+    await repo.update_room_fields(room_code, state="WAITING", round_no=0, last_activity=ts, countdown_end_at=0)
+    await repo.refresh_room_ttl(room_code, mode="VS")
+
+    return [OutRoomStateChanged(state="WAITING")]
+
+
+async def _auto_start_from_countdown(
+    *,
+    app,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.state != "CONFIG":
+        return []
+
+    countdown_end_at = int(getattr(header, "countdown_end_at", 0) or 0)
+    if not countdown_end_at or ts < countdown_end_at:
+        return []
+
+    if header.mode == "VS":
+        from app.domain.vs.handlers_start_round import handle_vs_start_game
+        _, to_room = await handle_vs_start_game(app=app, room_code=room_code, pid=header.gm_pid, msg=InStartGame())
+        return to_room
+
+    if header.mode == "SINGLE":
+        from app.domain.single.handlers_start import handle_single_start_game
+        _, to_room = await handle_single_start_game(app=app, room_code=room_code, pid=header.gm_pid, msg=InStartGame())
+        return to_room
+
+    return []
 
 
 def _gen_room_code(n: int = 6) -> str:
@@ -213,6 +321,7 @@ async def _build_snapshot(
             round_config={},
             game={},
             ops=[],
+            server_ts=now_ts(),
         )
 
     players = await repo.list_players(room_code)
@@ -220,12 +329,16 @@ async def _build_snapshot(
     round_cfg = await repo.get_round_config(room_code)
     # Redact secret_word unless viewer is GM/drawer
     if redact_secret and "secret_word" in round_cfg:
-        role = None
-        if viewer_pid:
-            p = await repo.get_player(room_code, viewer_pid)
-            role = getattr(p, "role", None) if p else None
-        if not _should_show_secret(roles=roles, viewer_pid=viewer_pid, player_role=role, header=header):
-            round_cfg = {k: v for k, v in round_cfg.items() if k != "secret_word"}
+        # During GAME_END, the end screen should reveal the word to everyone.
+        if getattr(header, "state", None) == "GAME_END":
+            pass
+        else:
+            role = None
+            if viewer_pid:
+                p = await repo.get_player(room_code, viewer_pid)
+                role = getattr(p, "role", None) if p else None
+            if not _should_show_secret(roles=roles, viewer_pid=viewer_pid, player_role=role, header=header):
+                round_cfg = {k: v for k, v in round_cfg.items() if k != "secret_word"}
     game = await repo.get_game(room_code)
     
     # Include budget/cooldown in game state for VS mode
@@ -261,6 +374,7 @@ async def _build_snapshot(
         game=game,
         ops=ops_out,
         modlog=[m.model_dump() for m in modlog],
+        server_ts=now_ts(),
     )
 
 
@@ -366,20 +480,30 @@ async def handle_snapshot(*, app, room_code: str, pid: Optional[str], msg: InSna
         return [OutError(code="ROOM_NOT_FOUND", message=f"Room {room_code} not found")], []
 
     ts = now_ts()
-    vs_round_events = await _auto_expire_vs_round(repo=repo, room_code=room_code, header=header, ts=ts)
-    phase_events: list[OutgoingEvent] = []
-    if not vs_round_events:
-        phase_events = await _auto_expire_guess_phase(repo=repo, room_code=room_code, header=header, ts=ts) or []
-    single_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
-    if phase_events or single_events or vs_round_events:
+    vote_events = await _auto_resolve_vs_vote_window(repo=repo, room_code=room_code, header=header, ts=ts)
+    if vote_events:
+        header = await repo.get_room_header(room_code) or header
+    reset_events = await _auto_reset_vs_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
+    if reset_events:
+        header = await repo.get_room_header(room_code) or header
+    auto_start_events = await _auto_start_from_countdown(app=app, room_code=room_code, header=header, ts=ts)
+    if auto_start_events:
+        header = await repo.get_room_header(room_code) or header
+    vs_phase_events = await _auto_expire_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+    single_events = await _auto_expire_single_game(repo=repo, room_code=room_code, header=header, ts=ts)
+    clear_events = await _auto_clear_ops_after_game(repo=repo, room_code=room_code, header=header, ts=ts)
+    if vote_events or reset_events or auto_start_events or vs_phase_events or single_events or clear_events:
         header = await repo.get_room_header(room_code) or header
 
     snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=pid, redact_secret=True)
     events = []
-    events.extend(vs_round_events)
-    events.extend(phase_events)
+    events.extend(vote_events)
+    events.extend(reset_events)
+    events.extend(auto_start_events)
+    events.extend(vs_phase_events)
     events.extend(single_events)
-    return [snap], events
+    events.extend(clear_events)
+    return [*events, snap], events
 
 
 async def handle_reconnect(*, app, room_code: str, pid: Optional[str], msg: InReconnect) -> Result:
@@ -408,8 +532,20 @@ async def handle_reconnect(*, app, room_code: str, pid: Optional[str], msg: InRe
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
+    vote_events = await _auto_resolve_vs_vote_window(repo=repo, room_code=room_code, header=header, ts=ts)
+    if vote_events:
+        header = await repo.get_room_header(room_code) or header
+    reset_events = await _auto_reset_vs_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
+    if reset_events:
+        header = await repo.get_room_header(room_code) or header
+
+    auto_start_events = await _auto_start_from_countdown(app=app, room_code=room_code, header=header, ts=ts)
+    if auto_start_events:
+        header = await repo.get_room_header(room_code) or header
+
     snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=effective_pid, redact_secret=True)
-    return [snap], []
+    events = [*vote_events, *reset_events, *auto_start_events]
+    return [*events, snap], events
 
 
 async def handle_heartbeat(*, app, room_code: str, pid: Optional[str], msg: InHeartbeat) -> Result:
@@ -426,22 +562,32 @@ async def handle_heartbeat(*, app, room_code: str, pid: Optional[str], msg: InHe
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message=f"Room {room_code} not found")], []
 
-    vs_round_events = await _auto_expire_vs_round(repo=repo, room_code=room_code, header=header, ts=ts)
-    phase_events: list[OutgoingEvent] = []
-    if not vs_round_events:
-        phase_events = await _auto_expire_guess_phase(repo=repo, room_code=room_code, header=header, ts=ts) or []
-    single_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    vote_events = await _auto_resolve_vs_vote_window(repo=repo, room_code=room_code, header=header, ts=ts)
+    if vote_events:
+        header = await repo.get_room_header(room_code) or header
+    reset_events = await _auto_reset_vs_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
+    if reset_events:
+        header = await repo.get_room_header(room_code) or header
+
+    auto_start_events = await _auto_start_from_countdown(app=app, room_code=room_code, header=header, ts=ts)
+    if auto_start_events:
+        header = await repo.get_room_header(room_code) or header
+    vs_phase_events = await _auto_expire_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+    single_events = await _auto_expire_single_game(repo=repo, room_code=room_code, header=header, ts=ts)
+    clear_events = await _auto_clear_ops_after_game(repo=repo, room_code=room_code, header=header, ts=ts)
 
     await repo.set_player_connected(room_code, pid, True, ts)
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
-    # Keep heartbeat quiet (no broadcast spam)
     events = []
-    events.extend(vs_round_events)
-    events.extend(phase_events)
+    events.extend(vote_events)
+    events.extend(reset_events)
+    events.extend(auto_start_events)
+    events.extend(vs_phase_events)
     events.extend(single_events)
-    return [], events
+    events.extend(clear_events)
+    return list(events), events
 
 
 async def handle_leave(*, app, room_code: str, pid: Optional[str], msg: InLeave) -> Result:

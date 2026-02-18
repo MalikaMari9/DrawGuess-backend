@@ -8,7 +8,7 @@ class FakeRepo:
     def __init__(self):
         self.header = RoomHeaderStore(
             mode="SINGLE",
-            state="ROUND_END",
+            state="GAME_END",
             cap=8,
             created_at=0,
             last_activity=0,
@@ -26,7 +26,6 @@ class FakeRepo:
 
     async def get_room_header(self, room_code):
         return self.header
-
 
     async def set_game_fields(self, room_code, **fields):
         self.game.update(fields)
@@ -105,7 +104,7 @@ async def test_single_vote_yes_moves_to_role_pick():
 
 
 @pytest.mark.asyncio
-async def test_single_vote_no_stays_round_end():
+async def test_single_vote_no_stays_game_end():
     repo = FakeRepo()
     app = FakeApp(repo)
 
@@ -114,4 +113,4 @@ async def test_single_vote_no_stays_round_end():
 
     await handle_single_vote_next(app=app, room_code="R1", pid="gm", msg=Msg())
     await handle_single_vote_next(app=app, room_code="R1", pid="g", msg=Msg())
-    assert repo.header.state == "ROUND_END"
+    assert repo.header.state == "GAME_END"

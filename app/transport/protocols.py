@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 Mode = Literal["SINGLE", "VS"]
 Team = Literal["A", "B"]
+GuessResult = Literal["CORRECT", "WRONG", "NO_GUESS"]
 
-RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_ROUND", "ROUND_END"]
+RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_GAME", "GAME_END"]
 Phase = Literal["", "FREE", "DRAW", "GUESS", "VOTING"]
 
 
@@ -84,8 +85,8 @@ class InSabotage(InBase):
     target: Team
     op: Dict[str, Any]
 
-class InEndRound(InBase):
-    type: Literal["end_round"] = "end_round"
+class InEndGame(InBase):
+    type: Literal["end_game"] = "end_game"
 
 class InModeration(InBase):
     type: Literal["moderation"] = "moderation"
@@ -111,26 +112,16 @@ class InAssignRoles(InBase):
     drawerB: Optional[str] = None  # pid, if None auto-assign
 
 
-class InStartRound(InBase):
-    type: Literal["start_round"] = "start_round"
-    # Secret word for this round. Must NOT be broadcast to non-GM clients.
-    secret_word: str = Field(min_length=1, max_length=50)
-    # Total time limit for the drawing phase (seconds). Example: 240 (4 minutes).
-    time_limit_sec: int = Field(default=240, ge=60, le=900)
-    # Strokes per DRAW phase for each team (VS mode): 3–5 as per spec.
-    strokes_per_phase: int = Field(default=3, ge=3, le=5)
-    # Optional guess window length (seconds) for VS mode, e.g. 10s.
-    guess_window_sec: int = Field(default=10, ge=5, le=60)
-
-# ---- VS (GM config before round) ----
+# ---- VS (GM config before game) ----
 
 class InSetVsConfig(InBase):
-    """GM sets VS round config (secret word + limits) before start_round."""
+    """GM sets VS game config (secret word + windows) before start_game."""
     type: Literal["set_vs_config"] = "set_vs_config"
     secret_word: str = Field(min_length=1, max_length=50)
-    time_limit_sec: int = Field(default=240, ge=60, le=900)
+    draw_window_sec: int = Field(default=60, ge=10, le=600)
     strokes_per_phase: int = Field(default=3, ge=3, le=5)
     guess_window_sec: int = Field(default=10, ge=5, le=60)
+    max_rounds: int = Field(default=5, ge=1, le=20)
 
 # ---- SINGLE (GM config / start) ----
 
@@ -160,12 +151,11 @@ IncomingMessage = Union[
     InVoteNext,
     InPhaseTick,
     InSabotage,
-    InEndRound,
+    InEndGame,
     InModeration,
     InSetTeam,
     InStartRolePick,
     InAssignRoles,
-    InStartRound,
     InSetVsConfig,
     InSetRoundConfig,
     InStartGame,
@@ -195,6 +185,7 @@ class OutRoomSnapshot(OutBase):
     game: Dict[str, Any] = Field(default_factory=dict)
     ops: List[Dict[str, Any]] = Field(default_factory=list)
     modlog: List[Dict[str, Any]] = Field(default_factory=list)
+    server_ts: int = 0
 
 
 class OutRoomCreated(OutBase):
@@ -246,12 +237,11 @@ _INCOMING_BY_TYPE = {
     "vote_next": InVoteNext,
     "phase_tick": InPhaseTick,
     "sabotage": InSabotage,
-    "end_round": InEndRound,
+    "end_game": InEndGame,
     "moderation": InModeration,
     "set_team": InSetTeam,
     "start_role_pick": InStartRolePick,
     "assign_roles": InAssignRoles,
-    "start_round": InStartRound,
     "set_vs_config": InSetVsConfig,
     "set_round_config": InSetRoundConfig,
     "start_game": InStartGame,
@@ -315,10 +305,11 @@ class OutPhaseChanged(OutBase):
 
 class OutGuessResult(OutBase):
     type: Literal["guess_result"] = "guess_result"
-    correct: bool
+    result: GuessResult
     team: Optional[Team] = None
-    text: str
-    by: str
+    text: str = ""
+    by: str = ""
+    correct: bool = False
 
 
 class OutGuessChat(OutBase):
@@ -341,11 +332,30 @@ class OutSabotageUsed(OutBase):
     cooldown_until: int
 
 
-class OutRoundEnd(OutBase):
-    type: Literal["round_end"] = "round_end"
+class OutGameEnd(OutBase):
+    type: Literal["game_end"] = "game_end"
     winner: Optional[Team] = None
     word: str
+    game_no: int
     round_no: int
+    reason: str
+
+
+class OutVoteResolved(OutBase):
+    type: Literal["vote_resolved"] = "vote_resolved"
+    outcome: Literal["YES", "NO"]
+    ts: int
+    yes_count: int
+    eligible: int
+
+
+class OutVoteProgress(OutBase):
+    type: Literal["vote_progress"] = "vote_progress"
+    ts: int
+    vote_end_at: int
+    yes_count: int
+    voted_count: int
+    eligible: int
 
 
 # Update OutgoingEvent union
@@ -368,5 +378,7 @@ OutgoingEvent = Union[
     OutGuessResult,
     OutBudgetUpdate,
     OutSabotageUsed,
-    OutRoundEnd,
+    OutGameEnd,
+    OutVoteResolved,
+    OutVoteProgress,
 ]

@@ -1,6 +1,6 @@
 import pytest
 
-from app.domain.common.end_round import handle_end_round
+from app.domain.common.end_game import handle_end_game
 from app.store.models import PlayerStore, RoomHeaderStore
 
 
@@ -8,12 +8,13 @@ class FakeRepo:
     def __init__(self):
         self.header = RoomHeaderStore(
             mode="SINGLE",
-            state="IN_ROUND",
+            state="IN_GAME",
             cap=8,
             created_at=0,
             last_activity=0,
             gm_pid="gm",
             round_no=1,
+            game_no=1,
         )
         self.players = {
             "gm": PlayerStore(pid="gm", name="GM", joined_at=0, last_seen=0, role="gm", connected=True),
@@ -63,16 +64,17 @@ class FakeApp:
 
 
 @pytest.mark.asyncio
-async def test_gm_end_round_clears_roles_and_moves_to_voting():
+async def test_gm_end_game_keeps_roles_and_moves_to_voting():
     repo = FakeRepo()
     app = FakeApp(repo)
 
     class Msg:
         pass
 
-    to_sender, to_room = await handle_end_round(app=app, room_code="R1", pid="gm", msg=Msg())
-    assert repo.header.state == "ROUND_END"
+    to_sender, to_room = await handle_end_game(app=app, room_code="R1", pid="gm", msg=Msg())
+    assert repo.header.state == "GAME_END"
     assert repo.game.get("phase") == "VOTING"
-    assert repo.players["gm"].role is None
-    assert repo.players["p1"].role is None
-    assert any(getattr(e, "type", "") == "round_end" for e in to_room)
+    # Keep roles for the end/voting screen; identity is stripped on reset after vote-YES.
+    assert repo.players["gm"].role == "gm"
+    assert repo.players["p1"].role == "guesser"
+    assert any(getattr(e, "type", "") == "game_end" for e in to_room)

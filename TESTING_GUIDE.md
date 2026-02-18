@@ -6,6 +6,9 @@ This guide is tailored for a Windows machine using PowerShell with:
 
 Adjust paths if your folders differ.
 
+
+Note: VS now uses draw_window_sec/guess_window_sec and max_rounds. Phase transitions are timer-based; `phase_tick` only checks timers.
+
 ## Prerequisites
 
 1. Backend server (FastAPI)
@@ -91,14 +94,14 @@ Expected:
 
 ---
 
-### Step 5: Start Round (GM Only)
+### Step 5: Start Game (GM Only)
 
-1. In CONFIG state, open `Start Round`
+1. In CONFIG state, open `Start Game`
 2. Enter a word (example: `elephant`)
-3. Click `Start Round`
+3. Click `Start Game`
 
 Expected:
-- State: IN_ROUND
+- State: IN_GAME
 - Phase: DRAW
 - Canvases visible
 - Budget shown (example: A: 4, B: 4)
@@ -150,7 +153,7 @@ Expected:
 
 Expected:
 - Incorrect guess -> result shown, no second guess this phase
-- Correct guess -> round ends, winner announced, state ROUND_END
+- Correct guess -> round ends, winner announced, state GAME_END
 
 ---
 
@@ -168,7 +171,7 @@ Expected:
 
 When a team guesses correctly:
 - Round ends automatically
-- State: ROUND_END
+- State: GAME_END
 - Winner and word revealed
 
 ---
@@ -274,8 +277,8 @@ Server -> {type: "teams_updated", teams: {"A": [...], "B": [...]}}
 
 ### Starting Round
 ```
-Client -> {type: "start_round", word: "elephant"}
-Server -> {type: "room_state_changed", state: "IN_ROUND"}
+Client -> {type: "start_game", word: "elephant"}
+Server -> {type: "room_state_changed", state: "IN_GAME"}
 Server -> {type: "phase_changed", phase: "DRAW", round_no: 1}
 Server -> {type: "budget_update", budget: {"A": 4, "B": 4}}
 ```

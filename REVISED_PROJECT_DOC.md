@@ -112,7 +112,7 @@ Correct guess or time expiry ends the round and enters `VOTING`.
 
 **Outcome**
 - Majority YES: room returns to `ROLE_PICK` (new roles assigned).
-- NO / tie: round ends (`ROUND_END`).
+- NO / tie: round ends (`GAME_END`).
 
 ---
 

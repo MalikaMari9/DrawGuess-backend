@@ -1,4 +1,3 @@
-# app/domain/single/handlers_vote.py
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
@@ -24,7 +23,7 @@ async def handle_single_vote_next(*, app, room_code: str, pid: Optional[str], ms
     if header.mode != "SINGLE":
         return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
 
-    if header.state != "ROUND_END":
+    if header.state != "GAME_END":
         return [OutError(code="BAD_STATE", message=f"Cannot vote_next in state {header.state}")], []
 
     game = await repo.get_game(room_code)
@@ -38,7 +37,6 @@ async def handle_single_vote_next(*, app, room_code: str, pid: Optional[str], ms
     if not eligible:
         return [OutError(code="NO_ELIGIBLE_VOTERS", message="No eligible voters")], []
 
-    # Decide only after ALL eligible voters have voted
     if not all(p in votes for p in eligible):
         await repo.update_room_fields(room_code, last_activity=ts)
         await repo.refresh_room_ttl(room_code, mode=header.mode)
@@ -48,28 +46,35 @@ async def handle_single_vote_next(*, app, room_code: str, pid: Optional[str], ms
     threshold = (len(eligible) // 2) + 1
 
     if yes_count >= threshold:
-        # Clear roles and go back to ROLE_PICK (new roles will be assigned)
         players = await repo.list_players(room_code)
         for p in players:
             await repo.update_player_fields(room_code, p.pid, role=None)
 
         await repo.set_roles(room_code, {})
-        await repo.clear_ops(room_code, mode="SINGLE")
-        await repo.set_game_fields(room_code, phase="", votes_next={}, winner_pid="", end_reason="")
+        await repo.set_game_fields(
+            room_code,
+            phase="",
+            votes_next={},
+            winner_pid="",
+            end_reason="",
+            game_end_at=0,
+            clear_ops_at=0,
+        )
         await repo.update_room_fields(room_code, state="ROLE_PICK", gm_pid=None, last_activity=ts)
         await repo.vote_next_clear(room_code)
         await repo.refresh_room_ttl(room_code, mode=header.mode)
 
         from app.domain.lifecycle.handlers import _build_snapshot
         snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=None, redact_secret=True)
-        return [], [OutRoomStateChanged(state="ROLE_PICK"), snap]
+        events = [OutRoomStateChanged(state="ROLE_PICK"), snap]
+        return list(events), events
 
-    # No / tie -> stay ROUND_END, clear votes
-    await repo.set_game_fields(room_code, phase="", votes_next={}, end_reason="VOTE_NO")
+    await repo.set_game_fields(room_code, phase="VOTING", votes_next={}, end_reason="VOTE_NO")
     await repo.vote_next_clear(room_code)
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     from app.domain.lifecycle.handlers import _build_snapshot
     snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=None, redact_secret=True)
-    return [], [OutRoomStateChanged(state="ROUND_END"), snap]
+    events = [OutRoomStateChanged(state="GAME_END"), snap]
+    return list(events), events

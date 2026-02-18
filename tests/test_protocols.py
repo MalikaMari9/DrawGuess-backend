@@ -11,28 +11,28 @@ def test_parse_incoming_create_room():
     assert msg.cap == 12
 
 
-def test_parse_incoming_start_round_bounds():
-    # Valid
+def test_parse_incoming_set_vs_config_bounds():
     msg = parse_incoming(
         {
-            "type": "start_round",
+            "type": "set_vs_config",
             "secret_word": "elephant",
-            "time_limit_sec": 240,
+            "draw_window_sec": 60,
             "strokes_per_phase": 4,
             "guess_window_sec": 10,
+            "max_rounds": 5,
         }
     )
-    assert msg.type == "start_round"
+    assert msg.type == "set_vs_config"
 
-    # Invalid strokes_per_phase (too low)
     with pytest.raises(ValidationError):
         parse_incoming(
             {
-                "type": "start_round",
+                "type": "set_vs_config",
                 "secret_word": "elephant",
-                "time_limit_sec": 240,
-                "strokes_per_phase": 2,
+                "draw_window_sec": 5,
+                "strokes_per_phase": 4,
                 "guess_window_sec": 10,
+                "max_rounds": 5,
             }
         )
 

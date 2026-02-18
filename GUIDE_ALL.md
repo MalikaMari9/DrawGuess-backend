@@ -1,5 +1,3 @@
-# DrawGuess Project Guide (All Modes)
-
 This guide explains the full project flow in simple terms, but with developer accuracy.
 
 ---
@@ -27,27 +25,34 @@ This guide explains the full project flow in simple terms, but with developer ac
    - VS -> `CONFIG`
    - SINGLE -> `ROLE_PICK` / `CONFIG` (GM config step)
 
-### C. Start Round
-1. GM provides round config (SINGLE) or calls `start_round` (VS: stroke count, round time limit, guess window).
-2. Server writes config to Redis and sets `IN_ROUND`.
-3. Phase becomes `DRAW`.
+### C. Configure + Start Game
+1. SINGLE: GM provides round config with `set_round_config`.
+2. VS: GM provides config with `set_vs_config` (secret_word, draw_window_sec, guess_window_sec, strokes_per_phase, max_rounds).
+3. GM starts the game with `start_game`.
+4. Server sets state to `IN_GAME` and phase to `DRAW`.
 
 ### D. Draw Phase
 1. Drawer sends `draw_op` messages.
 2. Server validates tool + stroke limits and budget.
 3. Server stores ops and broadcasts `op_broadcast`.
+4. VS: draw window ends -> phase switches to `GUESS` for both teams.
 
 ### E. Guess Phase
 1. SINGLE allows guesses during `DRAW` or `GUESS`; VS allows guesses only during `GUESS`.
 2. Server checks correctness.
-3. If correct -> round ends -> `VOTING`.
-4. VS guess window can auto-expire back to `DRAW` until round time ends.
+3. Correct guess -> game ends -> `GAME_END` + `VOTING`.
+4. VS: each team gets one guess per round; wrong guess waits for other team or timer.
 
-### F. Voting Phase
+### F. Round Advance (VS Only)
+1. If GUESS window ends with no correct guess, teams without guesses are marked `NO_GUESS`.
+2. If round_no < max_rounds, server starts next round (same secret, canvas persists).
+3. If max_rounds reached, game ends -> `GAME_END` + `VOTING` (NO_WINNER).
+
+### G. Voting Phase
 1. All roles are cleared when entering voting (everyone becomes a player).
 2. All active players vote.
 3. YES -> new roles -> `ROLE_PICK`.
-4. NO/tie -> round ends -> `ROUND_END`.
+4. NO/tie -> stay `GAME_END`.
 
 ---
 
@@ -63,10 +68,10 @@ This guide explains the full project flow in simple terms, but with developer ac
 - Special role with control permissions; assigned at role-pick.
 
 **State**
-- Room state: `WAITING`, `ROLE_PICK`, `CONFIG`, `IN_ROUND`, `ROUND_END`.
+- Room state: `WAITING`, `ROLE_PICK`, `CONFIG`, `IN_GAME`, `GAME_END`.
 
 **Phase**
-- Round phase: `DRAW`, `GUESS`, `VOTING`.
+- Game phase: `DRAW`, `GUESS`, `VOTING`.
 
 **Op (Draw Operation)**
 - A single drawing action (`line` or `circle`).

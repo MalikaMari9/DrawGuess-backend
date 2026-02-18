@@ -123,14 +123,27 @@ return {1, "OK", cooldown_until, new_val}
         norm = self._dec_map(data)
 
         # ints
-        for f in ["cap", "created_at", "last_activity", "round_no"]:
+        for f in ["cap", "created_at", "last_activity", "game_no", "round_no", "countdown_end_at"]:
             if f in norm and norm[f] != "":
                 norm[f] = int(norm[f])
+
+        # Back-compat: older data used round_no as game_no
+        if "game_no" not in norm and "round_no" in norm:
+            norm["game_no"] = int(norm.get("round_no") or 0)
+            norm["round_no"] = 0
         return RoomHeaderStore(**norm)
 
     async def update_room_fields(self, room_code: str, **fields: Any) -> None:
         rk = RK(room_code)
         await self.r.hset(rk.room(), mapping=fields)
+
+    async def clear_room_field(self, room_code: str, field: str) -> None:
+        rk = RK(room_code)
+        await self.r.hdel(rk.room(), field)
+
+    async def clear_round_config(self, room_code: str) -> None:
+        rk = RK(room_code)
+        await self.r.delete(rk.round_config())
 
     # ----------------------------
     # Players

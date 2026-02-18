@@ -8,14 +8,16 @@ Simple flow + developer terms for VS mode.
 1. Players connect and join.
 2. Any player triggers `start_role_pick` once 5+ players are connected.
 3. Server assigns GM and auto-splits teams A/B (GM excluded).
-4. Room moves to `CONFIG`.
-5. GM starts round with `start_round` (secret + round time limit + guess window + stroke budget).
-6. Phase `DRAW`: drawers send `draw_op` (budget enforced).
-7. Phase `GUESS`: each team submits one guess per phase.
-8. If correct guess -> round ends.
-9. If not correct -> move back to `DRAW` (new strokes).
-10. Round ends only on correct guess or time limit.
-11. After round end -> `VOTING` to decide next round (roles are cleared on entry).
+4. Roles auto-assigned (drawerA/drawerB; others guessers).
+5. Room moves to `CONFIG`.
+6. GM sets VS config with `set_vs_config` (secret_word, draw_window_sec, guess_window_sec, strokes_per_phase, max_rounds).
+7. GM starts game with `start_game`.
+8. Phase `DRAW`: drawers send `draw_op` (budget enforced) during draw window.
+9. When draw window ends, phase switches to `GUESS` for both teams.
+10. Each team gets one guess per round (any guesser). Wrong guess waits for other team or timer.
+11. Correct guess -> game ends -> `GAME_END` + `VOTING`.
+12. If no correct guess, guess window ends -> NO_GUESS for missing teams, advance to next round if round_no < max_rounds (same secret, canvas persists).
+13. If max_rounds reached -> `GAME_END` (NO_WINNER) + `VOTING`.
 
 ---
 
@@ -29,10 +31,10 @@ Simple flow + developer terms for VS mode.
 
 **Sabotage**
 - Drawer-only action that draws on opponent canvas.
-- Costs 1 stroke, cooldown enforced, disabled in last 30s.
+- Costs 1 stroke, cooldown enforced, disabled in last 30s of draw window.
 
 **Budget**
-- Per-team stroke budget per DRAW phase.
+- Per-team stroke budget per DRAW window.
 
 **Phase Loop**
-- `DRAW` -> `GUESS` -> `DRAW` until round ends.
+- `DRAW` -> `GUESS` -> `DRAW` until game ends.

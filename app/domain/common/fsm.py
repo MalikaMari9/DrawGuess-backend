@@ -11,9 +11,9 @@ def can_transition_to(current: RoomState, target: RoomState) -> bool:
     transitions: dict[RoomState, list[RoomState]] = {
         "WAITING": ["ROLE_PICK", "WAITING"],
         "ROLE_PICK": ["CONFIG", "WAITING"],
-        "CONFIG": ["IN_ROUND", "WAITING"],
-        "IN_ROUND": ["ROUND_END", "WAITING"],
-        "ROUND_END": ["CONFIG", "WAITING", "ROLE_PICK"],
+        "CONFIG": ["IN_GAME", "WAITING"],
+        "IN_GAME": ["GAME_END", "WAITING"],
+        "GAME_END": ["CONFIG", "WAITING", "ROLE_PICK"],
     }
     return target in transitions.get(current, [])
 
@@ -24,6 +24,7 @@ def can_transition_phase(current: Phase, target: Phase) -> bool:
     transitions: dict[Phase, list[Phase]] = {
         "": ["DRAW"],
         "DRAW": ["GUESS"],
-        "GUESS": ["DRAW", ""],  # "" means round end
+        "GUESS": ["DRAW", "VOTING"],
+        "VOTING": [""],
     }
     return target in transitions.get(current, [])

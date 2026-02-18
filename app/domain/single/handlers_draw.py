@@ -1,11 +1,10 @@
-# app/domain/single/handlers_draw.py
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
 from app.store.models import DrawOp
 from app.domain.common.ops import validate_draw_op
-from app.domain.lifecycle.handlers import _auto_expire_single_round
+from app.domain.lifecycle.handlers import _auto_expire_single_game
 from app.domain.vs.rules import should_auto_split_stroke
 from app.transport.protocols import (
     InDrawOp,
@@ -31,12 +30,12 @@ async def handle_single_draw_op(*, app, room_code: str, pid: Optional[str], msg:
         return [OutError(code="ROOM_NOT_FOUND", message="Room not found")], []
     if header.mode != "SINGLE":
         return [OutError(code="NOT_SINGLE", message="This handler is for SINGLE mode only")], []
-    if header.state != "IN_ROUND":
+    if header.state != "IN_GAME":
         return [OutError(code="BAD_STATE", message=f"Cannot draw in state {header.state}")], []
 
-    timeout_events = await _auto_expire_single_round(repo=repo, room_code=room_code, header=header, ts=ts)
+    timeout_events = await _auto_expire_single_game(repo=repo, room_code=room_code, header=header, ts=ts)
     if timeout_events:
-        return [OutError(code="ROUND_ENDED", message="Round timed out")], timeout_events
+        return [OutError(code="GAME_ENDED", message="Game timed out")], timeout_events
 
     game = await repo.get_game(room_code)
     if game.get("phase") != "DRAW":
@@ -55,7 +54,6 @@ async def handle_single_draw_op(*, app, room_code: str, pid: Optional[str], msg:
     if not ok:
         return [OutError(code=err_code, message=err_msg)], []
 
-    # Auto-split check for long strokes (line only)
     if op_type == "line":
         pts = None
         if isinstance(op_data.get("p"), dict):

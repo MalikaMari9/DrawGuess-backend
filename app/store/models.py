@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 Mode = Literal["SINGLE", "VS"]
-RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_ROUND", "ROUND_END"]
+RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_GAME", "GAME_END"]
 Phase = Literal["", "FREE", "DRAW", "GUESS", "VOTING"]
 
 
@@ -15,6 +15,7 @@ class PlayerStore(BaseModel):
     name: str
     role: Optional[str] = None          # "gm" | "drawer" | "guesser" | "drawerA" | ...
     team: Optional[Literal["A", "B"]] = None
+    points: int = 0
     connected: bool = True
     joined_at: int
     last_seen: int
@@ -30,7 +31,9 @@ class RoomHeaderStore(BaseModel):
     created_at: int
     last_activity: int
     gm_pid: Optional[str] = None
+    game_no: int = 0
     round_no: int = 0
+    countdown_end_at: int = 0
 
 
 class DrawOp(BaseModel):

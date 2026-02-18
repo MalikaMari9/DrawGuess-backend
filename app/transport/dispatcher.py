@@ -18,7 +18,6 @@ from app.transport.protocols import (
     InSetTeam,
     InStartRolePick,
     InAssignRoles,
-    InStartRound,
     InSetVsConfig,
     InSetRoundConfig,
     InStartGame,
@@ -28,7 +27,7 @@ from app.transport.protocols import (
     InSabotage,
     InVoteNext,
     InModeration,
-    InEndRound,
+    InEndGame,
 )
 from app.domain.lifecycle.handlers import (
     handle_create_room,
@@ -43,7 +42,7 @@ from app.domain.lobby.handlers import handle_set_team, handle_start_role_pick
 from app.domain.vs.handlers import (
     handle_vs_role_pick,
     handle_vs_set_round_config,
-    handle_vs_start_round,
+    handle_vs_start_game,
     handle_vs_draw_op,
     handle_vs_guess,
     handle_vs_phase_tick,
@@ -59,7 +58,7 @@ from app.domain.single.handlers import (
     handle_single_phase_tick,
     handle_single_vote_next,
 )
-from app.domain.common.end_round import handle_end_round
+from app.domain.common.end_game import handle_end_game
 from app.domain.common.validation import is_muted
 from app.util.timeutil import now_ts
 
@@ -141,8 +140,8 @@ async def dispatch_message(
         to_sender, to_room = await handle_moderation(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
 
-    if isinstance(msg, InEndRound):
-        to_sender, to_room = await handle_end_round(app=app, room_code=room_code, pid=pid, msg=msg)
+    if isinstance(msg, InEndGame):
+        to_sender, to_room = await handle_end_game(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
 
     # ---- SINGLE: GM config / start ----
@@ -156,17 +155,22 @@ async def dispatch_message(
         return _dump(to_sender), _dump(to_room)
 
     if isinstance(msg, InStartGame):
-        to_sender, to_room = await handle_single_start_game(app=app, room_code=room_code, pid=pid, msg=msg)
-        return _dump(to_sender), _dump(to_room)
+        repo = app.state.repo
+        header = await repo.get_room_header(room_code)
+        if header and header.mode == "VS":
+            to_sender, to_room = await handle_vs_start_game(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        if header and header.mode == "SINGLE":
+            to_sender, to_room = await handle_single_start_game(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="start_game only for VS/SINGLE rooms").model_dump()
+        return [err], []
 
     # ---- VS Mode routing ----
     if isinstance(msg, InAssignRoles):
         to_sender, to_room = await handle_vs_role_pick(app=app, room_code=room_code, pid=pid, msg=msg)
         return _dump(to_sender), _dump(to_room)
 
-    if isinstance(msg, InStartRound):
-        to_sender, to_room = await handle_vs_start_round(app=app, room_code=room_code, pid=pid, msg=msg)
-        return _dump(to_sender), _dump(to_room)
 
     # Route draw_op, guess, phase_tick, sabotage based on room mode
     # For now, route to VS handlers if mode is VS (could be improved with mode check)

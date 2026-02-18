@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import List, Optional, Tuple
 
 from app.transport.protocols import (
@@ -44,14 +42,15 @@ async def handle_vs_set_round_config(*, app, room_code: str, pid: Optional[str],
         room_code,
         {
             "secret_word": msg.secret_word.strip(),
-            "time_limit_sec": int(msg.time_limit_sec),
-            "strokes_per_phase": int(msg.strokes_per_phase),
+            "draw_window_sec": int(msg.draw_window_sec),
             "guess_window_sec": int(msg.guess_window_sec),
+            "strokes_per_phase": int(msg.strokes_per_phase),
+            "max_rounds": int(msg.max_rounds),
             "config_ready": 1,
         },
     )
 
-    await repo.update_room_fields(room_code, state="CONFIG", last_activity=ts)
+    await repo.update_room_fields(room_code, state="CONFIG", last_activity=ts, countdown_end_at=ts + 5)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     to_sender = [OutRoomStateChanged(state="CONFIG"), await _snapshot_for(app, room_code, viewer_pid=pid)]

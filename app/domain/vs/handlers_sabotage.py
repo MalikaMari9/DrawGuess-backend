@@ -1,10 +1,9 @@
-# app/domain/vs/handlers_sabotage.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
 from app.domain.common.validation import is_drawer
-from .handlers_common import Result, transition_draw_to_guess
+from .handlers_common import Result, auto_advance_vs_phase
 from app.domain.vs.rules import SABOTAGE_COOLDOWN_SEC, SABOTAGE_COST_STROKES, SABOTAGE_DISABLE_LAST_SEC
 from app.store.models import DrawOp
 from app.transport.protocols import OutBudgetUpdate, OutError, OutOpBroadcast, OutSabotageUsed, InSabotage
@@ -29,13 +28,21 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     if header.mode != "VS":
         return [OutError(code="NOT_VS", message="This handler is for VS mode only")], []
 
-    if header.state != "IN_ROUND":
+    if header.state != "IN_GAME":
         return [OutError(code="BAD_STATE", message=f"Cannot sabotage in state {header.state}")], []
 
-    # Sabotage only allowed in DRAW phase
     game = await repo.get_game(room_code)
     if game.get("phase") != "DRAW":
         return [OutError(code="BAD_PHASE", message="Sabotage is only allowed in DRAW phase")], []
+
+    draw_end_at_raw = game.get("draw_end_at", 0)
+    try:
+        draw_end_at = int(draw_end_at_raw) if draw_end_at_raw else 0
+    except (TypeError, ValueError):
+        draw_end_at = 0
+    if draw_end_at and ts >= draw_end_at:
+        events = await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+        return [OutError(code="DRAW_EXPIRED", message="Draw window ended")], events
 
     player = await repo.get_player(room_code, pid)
     if player is None:
@@ -47,23 +54,12 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     if player.team is None:
         return [OutError(code="NO_TEAM", message="Player has no team")], []
 
-    # Cannot sabotage own team
     if player.team == msg.target:
         return [OutError(code="INVALID_TARGET", message="Cannot sabotage own team")], []
 
-    # Check cooldown
-    round_cfg = await repo.get_round_config(room_code)
-    round_start_ts = round_cfg.get("round_started_at", ts)
-    round_duration_sec = round_cfg.get("time_limit_sec", 300)
+    if draw_end_at and ts >= (draw_end_at - SABOTAGE_DISABLE_LAST_SEC):
+        return [OutError(code="SABOTAGE_BLOCKED", message="Sabotage disabled in last 30 seconds of draw window")], []
 
-    # Only enforce "last 30 seconds" here; cooldown is handled atomically in Redis
-    if ts >= (round_start_ts + round_duration_sec - SABOTAGE_DISABLE_LAST_SEC):
-        return [OutError(code="SABOTAGE_BLOCKED", message="Sabotage disabled in last 30 seconds of round")], []
-
-    # Validate sabotage operation (must be a valid draw operation: line or circle)
-    # Accept both:
-    # {"t":"line","pts":[...],...}
-    # {"t":"line","p":{"pts":[...],...}}
     raw_op = msg.op or {}
     op_data: Dict[str, Any] = dict(raw_op)
     nested = raw_op.get("p")
@@ -72,15 +68,13 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     op_data.pop("p", None)
     op_type = op_data.get("t", "line")
 
-    # Sabotage can use line or circle tool
     if op_type not in ["line", "circle"]:
         return [OutError(code="INVALID_SABOTAGE_OP", message="Sabotage operation must be 'line' or 'circle'")], []
 
-    # Normalize/augment payload (same compact format as draw_op)
     op_payload: Dict[str, Any] = dict(op_data)
     op_payload["pid"] = pid
     op_payload.setdefault("tool", op_type)
-    op_payload["sab"] = 1  # mark as sabotage stroke
+    op_payload["sab"] = 1
 
     if op_type == "line":
         pts = op_payload.get("pts", [])
@@ -90,7 +84,6 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         if op_payload.get("cx") is None or op_payload.get("cy") is None or op_payload.get("r") is None:
             return [OutError(code="INVALID_SABOTAGE", message="Sabotage circle requires cx, cy and r")], []
 
-    # Atomic budget+cooldown check/update
     new_cooldown_until = ts + SABOTAGE_COOLDOWN_SEC
     ok, reason, cooldown_until, _remaining = await repo.use_sabotage(
         room_code,
@@ -104,7 +97,6 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
             return [OutError(code="SABOTAGE_BLOCKED", message="Sabotage on cooldown")], []
         return [OutError(code="INSUFFICIENT_BUDGET", message="Not enough strokes for sabotage")], []
 
-    # Create sabotage operation (one stroke on opponent's canvas)
     draw_op = DrawOp(
         t=op_type,
         p=op_payload,
@@ -112,9 +104,7 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         by=pid,
     )
 
-    # Store on target team's canvas (opponent's canvas)
     await repo.append_op_vs(room_code, msg.target, draw_op)
-
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
 
@@ -124,21 +114,5 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         OutSabotageUsed(by=pid, target=msg.target, cooldown_until=cooldown_until),
         OutBudgetUpdate(budget=budget_after),
     ]
-
-    # Sabotage also spends draw budget; transition once both teams are out.
-    budget_a = int(budget_after.get("A", 0))
-    budget_b = int(budget_after.get("B", 0))
-    if budget_a <= 0 and budget_b <= 0:
-        game_after = await repo.get_game(room_code)
-        if game_after.get("phase") == "DRAW":
-            guess_window_sec = int(round_cfg.get("guess_window_sec", 10))
-            _, phase_events = await transition_draw_to_guess(
-                repo=repo,
-                room_code=room_code,
-                ts=ts,
-                round_no=header.round_no,
-                guess_window_sec=guess_window_sec,
-            )
-            to_room.extend(phase_events)
 
     return [], to_room

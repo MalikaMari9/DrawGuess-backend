@@ -1,11 +1,10 @@
-# app/domain/vs/handlers_draw.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
 from app.domain.common.validation import is_drawer
 from app.domain.common.ops import validate_draw_op
-from .handlers_common import Result, transition_draw_to_guess
+from .handlers_common import Result, auto_advance_vs_phase
 from app.domain.vs.rules import should_auto_split_stroke
 from app.store.models import DrawOp
 from app.transport.protocols import OutBudgetUpdate, OutError, OutOpBroadcast, InDrawOp
@@ -30,42 +29,35 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
     if header.mode != "VS":
         return [OutError(code="NOT_VS", message="This handler is for VS mode only")], []
 
-    if header.state != "IN_ROUND":
+    if header.state != "IN_GAME":
         return [OutError(code="BAD_STATE", message=f"Cannot draw in state {header.state}")], []
 
     game = await repo.get_game(room_code)
     if game.get("phase") != "DRAW":
         return [OutError(code="BAD_PHASE", message="Not in DRAW phase")], []
 
-    # Enforce round time limit
-    round_end_at_raw = game.get("round_end_at", 0)
+    draw_end_at_raw = game.get("draw_end_at", 0)
     try:
-        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
+        draw_end_at = int(draw_end_at_raw) if draw_end_at_raw else 0
     except (TypeError, ValueError):
-        round_end_at = 0
-    if round_end_at and ts >= round_end_at:
-        return [OutError(code="ROUND_ENDED", message="Round time limit reached")], []
+        draw_end_at = 0
+    if draw_end_at and ts >= draw_end_at:
+        events = await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+        return [OutError(code="DRAW_EXPIRED", message="Draw window ended")], events
 
     player = await repo.get_player(room_code, pid)
     if player is None:
         return [OutError(code="PLAYER_NOT_FOUND", message="Player not found")], []
 
-    # Determine which team's canvas this is for
     canvas = msg.canvas
     if canvas is None:
-        # Infer from player's team
         canvas = player.team
         if canvas is None:
             return [OutError(code="NO_TEAM", message="Player has no team")], []
 
-    # Check if player is drawer for this team
     if not is_drawer(player, canvas):
         return [OutError(code="NOT_DRAWER", message="Only drawer can draw")], []
 
-    # Parse draw operation (compact format as per spec)
-    # Accept both:
-    # {"t":"line","pts":[...],...}
-    # {"t":"line","p":{"pts":[...],...}}
     raw_op = msg.op or {}
     op_data: Dict[str, Any] = dict(raw_op)
     nested = raw_op.get("p")
@@ -76,31 +68,24 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
     if not ok:
         return [OutError(code=err_code, message=err_msg)], []
 
-    # Normalize/augment payload
     op_payload: Dict[str, Any] = dict(op_data)
-    op_payload["pid"] = pid  # authoritative server pid
+    op_payload["pid"] = pid
     op_payload.setdefault("tool", op_type)
     op_payload.setdefault("sab", 0)
 
     if op_type == "line":
-        # Line tool: validate pts array
         pts = op_payload.get("pts")
         if pts is None and isinstance(op_payload.get("p"), dict):
             pts = op_payload["p"].get("pts")
             if pts is not None:
                 op_payload["pts"] = pts
         pts = pts or []
-        # Check budget (atomic consume)
-        team_budget_key = canvas
-        ok, remaining = await repo.consume_vs_stroke(room_code, team_budget_key, cost=1)
+        ok, _remaining = await repo.consume_vs_stroke(room_code, canvas, cost=1)
         if not ok:
             return [OutError(code="NO_BUDGET", message="No strokes remaining for this phase")], []
-        # Auto-split check: prevent abuse by splitting long strokes
         start_ts = op_payload.get("start_ts", ts)
-        # Flatten pts into list of dicts for compatibility with should_auto_split_stroke
         points_for_check = [{"x": p[0], "y": p[1]} for p in pts if isinstance(p, (list, tuple)) and len(p) == 2]
         if should_auto_split_stroke(points_for_check, start_ts, ts):
-            # Server-side enforcement: reject stroke and consume budget to prevent bypass
             return [
                 OutError(
                     code="STROKE_TOO_LONG",
@@ -109,12 +94,10 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
             ], []
 
     elif op_type == "circle":
-        # Check budget (atomic consume)
-        team_budget_key = canvas
-        ok, remaining = await repo.consume_vs_stroke(room_code, team_budget_key, cost=1)
+        ok, _remaining = await repo.consume_vs_stroke(room_code, canvas, cost=1)
         if not ok:
             return [OutError(code="NO_BUDGET", message="No strokes remaining for this phase")], []
-    # Create DrawOp with compact payload
+
     draw_op = DrawOp(
         t=op_type,
         p=op_payload,
@@ -122,10 +105,7 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
         by=pid,
     )
 
-    # Store operation
     await repo.append_op_vs(room_code, canvas, draw_op)
-
-    # Update activity
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
 
@@ -134,22 +114,5 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
         OutOpBroadcast(op=draw_op.model_dump(), canvas=canvas, by=pid),
         OutBudgetUpdate(budget=budget_after),
     ]
-
-    # Move to GUESS only when both teams spent all configured budget.
-    budget_a = int(budget_after.get("A", 0))
-    budget_b = int(budget_after.get("B", 0))
-    if budget_a <= 0 and budget_b <= 0:
-        game_after = await repo.get_game(room_code)
-        if game_after.get("phase") == "DRAW":
-            round_cfg = await repo.get_round_config(room_code)
-            guess_window_sec = int(round_cfg.get("guess_window_sec", 10))
-            _, phase_events = await transition_draw_to_guess(
-                repo=repo,
-                room_code=room_code,
-                ts=ts,
-                round_no=header.round_no,
-                guess_window_sec=guess_window_sec,
-            )
-            to_room.extend(phase_events)
 
     return [], to_room

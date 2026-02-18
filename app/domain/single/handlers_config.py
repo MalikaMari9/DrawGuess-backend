@@ -52,7 +52,7 @@ async def handle_single_set_round_config(*, app, room_code: str, pid: Optional[s
         },
     )
 
-    await repo.update_room_fields(room_code, state="CONFIG", last_activity=ts)
+    await repo.update_room_fields(room_code, state="CONFIG", last_activity=ts, countdown_end_at=ts + 5)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     to_sender = [OutRoomStateChanged(state="CONFIG"), await _snapshot_for(app, room_code, viewer_pid=pid)]

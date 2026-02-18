@@ -1,4 +1,3 @@
-# app/domain/single/handlers_start.py
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
@@ -55,29 +54,48 @@ async def handle_single_start_game(*, app, room_code: str, pid: Optional[str], m
     if not drawer_pid:
         return [OutError(code="NO_DRAWER", message="Drawer not assigned")], []
 
+    game_no = int(header.game_no or 0) + 1
+    round_no = game_no
+
     await repo.set_game_fields(
         room_code,
         phase="DRAW",
         drawer_pid=drawer_pid,
-        round_started_at=ts,
-        round_end_at=ts + time_limit_sec,
+        game_started_at=ts,
+        game_end_at=ts + time_limit_sec,
         stroke_limit=stroke_limit,
         strokes_left=stroke_limit,
         votes_next={},
+        game_no=game_no,
+        round_no=round_no,
+        winner_pid="",
+        end_reason="",
+        clear_ops_at=0,
     )
 
-    round_no = header.round_no + 1
-    await repo.update_room_fields(room_code, state="IN_ROUND", last_activity=ts, round_no=round_no)
+    await repo.update_room_fields(
+        room_code,
+        state="IN_GAME",
+        last_activity=ts,
+        round_no=round_no,
+        game_no=game_no,
+        countdown_end_at=0,
+    )
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     to_sender = [
-        OutRoomStateChanged(state="IN_ROUND"),
+        OutRoomStateChanged(state="IN_GAME"),
         OutPhaseChanged(phase="DRAW", round_no=round_no),
         await _snapshot_for(app, room_code, viewer_pid=pid),
     ]
     to_room = [
-        OutRoomStateChanged(state="IN_ROUND"),
+        OutRoomStateChanged(state="IN_GAME"),
         OutPhaseChanged(phase="DRAW", round_no=round_no),
-        await _snapshot_for(app, room_code, viewer_pid=None),
     ]
+    players = await repo.list_players(room_code)
+    for p in players:
+        if not getattr(p, "connected", True):
+            continue
+        snap = await _snapshot_for(app, room_code, viewer_pid=p.pid)
+        to_room.append({**snap.model_dump(), "targets": [p.pid]})
     return to_sender, to_room

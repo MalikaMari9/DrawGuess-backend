@@ -11,7 +11,7 @@ class FakeRepo:
     def __init__(self):
         self.header = RoomHeaderStore(
             mode="SINGLE",
-            state="IN_ROUND",
+            state="IN_GAME",
             cap=8,
             created_at=0,
             last_activity=0,
@@ -76,6 +76,7 @@ class FakeRepo:
 
     async def get_ops_vs(self, room_code, team):
         return []
+
     async def get_active_pids(self, room_code):
         return set(self.active)
 
@@ -114,16 +115,14 @@ async def test_single_correct_guess_moves_to_voting():
         text = "apple"
 
     to_sender, to_room = await handle_single_guess(app=app, room_code="R1", pid="g", msg=Msg())
-    assert repo.header.state == "ROUND_END"
+    assert repo.header.state == "GAME_END"
     assert repo.game.get("phase") == "VOTING"
-    # roles cleared
     assert repo.players["gm"].role is None
     assert repo.players["d"].role is None
     assert repo.players["g"].role is None
-    # should emit phase change and round end
     types = {e.type for e in to_room if hasattr(e, "type")}
     assert "phase_changed" in types
-    assert "round_end" in types
+    assert "game_end" in types
 
 
 @pytest.mark.asyncio
@@ -147,11 +146,9 @@ async def test_single_phase_tick_gm_only():
     class Msg:
         pass
 
-    # GM can tick
     to_sender, to_room = await handle_single_phase_tick(app=app, room_code="R1", pid="gm", msg=Msg())
     assert any(getattr(e, "type", "") == "phase_changed" for e in to_room)
 
-    # Non-GM blocked
     to_sender, to_room = await handle_single_phase_tick(app=app, room_code="R1", pid="g", msg=Msg())
     assert any(getattr(e, "type", "") == "error" for e in to_sender)
 
@@ -160,22 +157,21 @@ async def test_single_phase_tick_gm_only():
 async def test_single_vote_all_active():
     repo = FakeRepo()
     app = FakeApp(repo)
-    repo.header.state = "ROUND_END"
+    repo.header.state = "GAME_END"
     repo.game["phase"] = "VOTING"
 
     class Msg:
         vote = "yes"
 
     to_sender, to_room = await handle_single_vote_next(app=app, room_code="R1", pid="gm", msg=Msg())
-    # vote is accepted from GM (active)
     assert not any(getattr(e, "type", "") == "error" for e in to_sender)
 
 
 @pytest.mark.asyncio
-async def test_single_timeout_ends_round_on_guess():
+async def test_single_timeout_ends_game_on_guess():
     repo = FakeRepo()
     app = FakeApp(repo)
-    repo.game["round_end_at"] = 1  # already expired
+    repo.game["game_end_at"] = 1
     repo.game["phase"] = "GUESS"
 
     class Msg:
@@ -186,7 +182,7 @@ async def test_single_timeout_ends_round_on_guess():
     types = {e.type for e in to_room if hasattr(e, "type")}
     assert "room_state_changed" in types
     assert "phase_changed" in types
-    assert "round_end" in types
+    assert "game_end" in types
 
 
 @pytest.mark.asyncio

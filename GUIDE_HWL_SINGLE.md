@@ -12,10 +12,10 @@ Simple flow + developer terms for SINGLE mode.
 5. GM starts game (`start_game`).
 6. Phase `DRAW`: drawer sends `draw_op` (stroke limit enforced).
 7. Guessers can send guesses during `DRAW` or `GUESS`.
-8. If correct guess -> round ends -> `VOTING`.
-9. If time expires -> round ends -> `VOTING`.
+8. Correct guess -> game ends -> `GAME_END` + `VOTING`.
+9. Time expires -> game ends -> `GAME_END` + `VOTING`.
 10. Entering `VOTING` clears roles for everyone.
-11. All active players vote. YES -> `ROLE_PICK`. NO/tie -> stay `ROUND_END`.
+11. All active players vote. YES -> `ROLE_PICK`. NO/tie -> stay `GAME_END`.
 
 ---
 
@@ -28,7 +28,7 @@ Simple flow + developer terms for SINGLE mode.
 - Players who can submit guesses.
 
 **Stroke Limit**
-- Max strokes per round for drawer.
+- Max strokes per game for drawer.
 
 **Round Config**
 - Secret word, stroke limit, time limit (set by GM).

@@ -1,18 +1,21 @@
-# app/domain/vs/handlers_guess.py
 from __future__ import annotations
 
 from typing import Optional
 
 from app.domain.common.validation import is_guesser, is_muted
-from .handlers_common import Result, transition_guess_to_draw
-from app.transport.protocols import OutError, OutGuessResult, OutRoomStateChanged, OutRoundEnd, OutPhaseChanged, InGuess
+from .handlers_common import Result, auto_advance_vs_phase, advance_vs_round_or_end_game, end_vs_game
+from app.transport.protocols import OutError, OutGuessResult, InGuess
 from app.util.timeutil import now_ts
+
+
+def _norm(s: str) -> str:
+    return "".join((s or "").strip().lower().split())
 
 
 async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGuess) -> Result:
     """
     Handle guesses in VS mode.
-    Each guesser gets one guess per GUESS phase.
+    One guess per team per round (any guesser can take it).
     """
     if not pid:
         return [OutError(code="NO_PID", message="Missing pid")], []
@@ -27,21 +30,12 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
     if header.mode != "VS":
         return [OutError(code="NOT_VS", message="This handler is for VS mode only")], []
 
-    if header.state != "IN_ROUND":
+    if header.state != "IN_GAME":
         return [OutError(code="BAD_STATE", message=f"Cannot guess in state {header.state}")], []
 
     game = await repo.get_game(room_code)
     if game.get("phase") != "GUESS":
         return [OutError(code="BAD_PHASE", message="Not in GUESS phase")], []
-
-    # Enforce round time limit
-    round_end_at_raw = game.get("round_end_at", 0)
-    try:
-        round_end_at = int(round_end_at_raw) if round_end_at_raw else 0
-    except (TypeError, ValueError):
-        round_end_at = 0
-    if round_end_at and ts >= round_end_at:
-        return [OutError(code="ROUND_ENDED", message="Round time limit reached")], []
 
     guess_end_at_raw = game.get("guess_end_at", 0)
     try:
@@ -50,16 +44,8 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
         guess_end_at = 0
 
     if guess_end_at and ts >= guess_end_at:
-        round_cfg = await repo.get_round_config(room_code)
-        stroke_limit = int(round_cfg.get("strokes_per_phase", 3))
-        _, to_room = await transition_guess_to_draw(
-            repo=repo,
-            room_code=room_code,
-            ts=ts,
-            round_no=header.round_no,
-            stroke_limit=stroke_limit,
-        )
-        return [OutError(code="GUESS_EXPIRED", message="Guess phase timer expired")], to_room
+        events = await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+        return [OutError(code="GUESS_EXPIRED", message="Guess window ended")], events
 
     player = await repo.get_player(room_code, pid)
     if player is None:
@@ -74,92 +60,66 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
     if player.team is None:
         return [OutError(code="NO_TEAM", message="Player has no team")], []
 
-    # Check if this player already guessed this phase
-    phase_guesses = game.get("phase_guesses", {})
-    if pid in phase_guesses:
-        return [OutError(code="ALREADY_GUESSED", message="You already guessed this phase")], []
+    guess_text = (msg.text or "").strip()
+    if not guess_text:
+        return [OutError(code="EMPTY_GUESS", message="Empty guess")], []
 
-    # Get word
+    team_guessed = game.get("team_guessed") or {}
+    team_guess_result = game.get("team_guess_result") or {}
+
+    if team_guessed.get(player.team):
+        return [OutError(code="TEAM_ALREADY_GUESSED", message="Team already guessed this round")], []
+
     round_cfg = await repo.get_round_config(room_code)
     word_raw = round_cfg.get("secret_word", "")
-    word = word_raw.lower().strip()
-    guess_text = msg.text.lower().strip()
+    word = _norm(word_raw)
+    correct = _norm(guess_text) == word
+    result = "CORRECT" if correct else "WRONG"
 
-    # Check if correct
-    correct = guess_text == word
-
-    # Record guess
-    phase_guesses[pid] = {
-        "team": player.team,
-        "text": msg.text,
-        "by": pid,
-        "ts": ts,
-        "correct": correct,
-    }
-    await repo.set_game_fields(room_code, phase_guesses=phase_guesses)
+    team_guessed[player.team] = True
+    team_guess_result[player.team] = result
+    await repo.set_game_fields(
+        room_code,
+        team_guessed=team_guessed,
+        team_guess_result=team_guess_result,
+    )
 
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
 
-    # If correct, end round
+    guess_event = OutGuessResult(
+        result=result,
+        team=player.team,
+        text=guess_text,
+        by=pid,
+        correct=correct,
+    )
+
+    to_room = [guess_event]
+
     if correct:
-        # Clear roles for voting stage
-        from app.domain.common.roles import clear_all_roles
-        await clear_all_roles(repo, room_code)
-
-        # Update score and end round
-        game = await repo.get_game(room_code)
-        score = game.get("score") or {"A": 0, "B": 0}
-        if player.team in ["A", "B"]:
-            score[player.team] = int(score.get(player.team, 0)) + 1
-        await repo.set_game_fields(room_code, score=score)
-
-        # Persist round end metadata
-        await repo.set_game_fields(
-            room_code,
-            winner_team=player.team or "",
-            winner_pid=pid,
-            end_reason="CORRECT",
-            round_end_at=ts,
-        )
-        await repo.set_game_fields(
-            room_code,
-            phase="VOTING",
-            phase_guesses={},
-            votes_next={},
-            guess_started_at=0,
-            guess_end_at=0,
-        )
-        await repo.update_room_fields(room_code, state="ROUND_END", last_activity=ts)
-        await repo.vote_next_clear(room_code)
-        return [], [
-            OutGuessResult(correct=True, team=player.team, text=msg.text, by=pid),
-            OutRoundEnd(winner=player.team, word=word_raw, round_no=header.round_no),
-            OutRoomStateChanged(state="ROUND_END"),
-            OutPhaseChanged(phase="VOTING", round_no=header.round_no),
-        ]
-
-    # If at least one wrong guess has been made by each team (and no one was correct),
-    # return to DRAW with refreshed phase budget.
-    guessed_a_wrong = False
-    guessed_b_wrong = False
-    for g in phase_guesses.values():
-        g_team = g.get("team")
-        g_correct = bool(g.get("correct"))
-        if g_team == "A" and not g_correct:
-            guessed_a_wrong = True
-        if g_team == "B" and not g_correct:
-            guessed_b_wrong = True
-    if guessed_a_wrong and guessed_b_wrong:
-        stroke_limit = int(round_cfg.get("strokes_per_phase", 3))
-        _, to_room = await transition_guess_to_draw(
+        end_events = await end_vs_game(
             repo=repo,
             room_code=room_code,
+            header=header,
             ts=ts,
-            round_no=header.round_no,
-            stroke_limit=stroke_limit,
+            winner_team=player.team,
+            winner_pid=pid,
+            word=word_raw,
+            reason="CORRECT",
         )
-        return [], [OutGuessResult(correct=False, team=player.team, text=msg.text, by=pid), *to_room]
+        to_room.extend(end_events)
+        return list(to_room), to_room
 
-    # Otherwise, just broadcast guess result and stay in GUESS.
-    return [], [OutGuessResult(correct=False, team=player.team, text=msg.text, by=pid)]
+    if team_guessed.get("A") and team_guessed.get("B"):
+        advance_events = await advance_vs_round_or_end_game(
+            repo=repo,
+            room_code=room_code,
+            header=header,
+            ts=ts,
+            round_cfg=round_cfg,
+        )
+        to_room.extend(advance_events)
+        return list(to_room), to_room
+
+    return list(to_room), to_room
