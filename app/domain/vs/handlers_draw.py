@@ -86,12 +86,14 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
         start_ts = op_payload.get("start_ts", ts)
         points_for_check = [{"x": p[0], "y": p[1]} for p in pts if isinstance(p, (list, tuple)) and len(p) == 2]
         if should_auto_split_stroke(points_for_check, start_ts, ts):
+            budget_after = await repo.get_budget(room_code)
             return [
                 OutError(
                     code="STROKE_TOO_LONG",
                     message="Stroke too long (exceeds duration or point limit). Budget consumed.",
-                )
-            ], []
+                ),
+                OutBudgetUpdate(budget=budget_after),
+            ], [OutBudgetUpdate(budget=budget_after)]
 
     elif op_type == "circle":
         ok, _remaining = await repo.consume_vs_stroke(room_code, canvas, cost=1)
@@ -115,4 +117,4 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
         OutBudgetUpdate(budget=budget_after),
     ]
 
-    return [], to_room
+    return [OutBudgetUpdate(budget=budget_after)], to_room

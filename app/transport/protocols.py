@@ -14,7 +14,7 @@ Team = Literal["A", "B"]
 GuessResult = Literal["CORRECT", "WRONG", "NO_GUESS"]
 
 RoomState = Literal["WAITING", "ROLE_PICK", "CONFIG", "IN_GAME", "GAME_END"]
-Phase = Literal["", "FREE", "DRAW", "GUESS", "VOTING"]
+Phase = Literal["", "FREE", "DRAW", "GUESS", "VOTING", "TRANSITION"]
 
 
 # =========================
@@ -118,8 +118,8 @@ class InSetVsConfig(InBase):
     """GM sets VS game config (secret word + windows) before start_game."""
     type: Literal["set_vs_config"] = "set_vs_config"
     secret_word: str = Field(min_length=1, max_length=50)
-    draw_window_sec: int = Field(default=60, ge=10, le=600)
-    strokes_per_phase: int = Field(default=3, ge=3, le=5)
+    draw_window_sec: int = Field(default=10, ge=10, le=600)
+    strokes_per_phase: int = Field(default=3, ge=1, le=20)
     guess_window_sec: int = Field(default=10, ge=5, le=60)
     max_rounds: int = Field(default=5, ge=1, le=20)
 

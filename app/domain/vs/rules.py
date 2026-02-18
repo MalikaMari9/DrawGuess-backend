@@ -7,8 +7,8 @@ from app.util.timeutil import now_ts
 
 # VS Mode Constants
 MIN_PLAYERS_VS = 5
-STROKES_PER_PHASE_MIN = 3
-STROKES_PER_PHASE_MAX = 5
+STROKES_PER_PHASE_MIN = 1
+STROKES_PER_PHASE_MAX = 20
 SABOTAGE_COOLDOWN_SEC = 180
 SABOTAGE_DISABLE_LAST_SEC = 30
 SABOTAGE_COST_STROKES = 1
@@ -58,10 +58,10 @@ def validate_vs_start_conditions(players: list, teams: dict[str, list[str]], gm_
 
 def calculate_strokes_per_phase() -> int:
     """
-    Calculate strokes per phase (3-5 strokes per phase as per spec).
+    Calculate strokes per phase (1-20 strokes per phase as per config range).
     Can be made configurable per room/round in the future.
     """
-    # Default: 4 strokes per phase (within 3-5 range)
+    # Default: 4 strokes per phase (within 1-20 range)
     # Can be randomized or made configurable: random.randint(STROKES_PER_PHASE_MIN, STROKES_PER_PHASE_MAX)
     return 4
 

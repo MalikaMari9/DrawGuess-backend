@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from app.domain.common.validation import is_guesser, is_muted
-from .handlers_common import Result, auto_advance_vs_phase, advance_vs_round_or_end_game, end_vs_game
+from .handlers_common import Result, auto_advance_vs_phase, enter_vs_transition
 from app.transport.protocols import OutError, OutGuessResult, InGuess
 from app.util.timeutil import now_ts
 
@@ -98,28 +98,50 @@ async def handle_vs_guess(*, app, room_code: str, pid: Optional[str], msg: InGue
     to_room = [guess_event]
 
     if correct:
-        end_events = await end_vs_game(
+        transition_events = await enter_vs_transition(
             repo=repo,
             room_code=room_code,
-            header=header,
             ts=ts,
+            round_no=header.round_no,
+            front="WE FOUND A WINNER!!",
+            back=f"Correct guess is {word_raw}",
+            next_phase="GAME_END",
             winner_team=player.team,
             winner_pid=pid,
             word=word_raw,
             reason="CORRECT",
         )
-        to_room.extend(end_events)
+        to_room.extend(transition_events)
         return list(to_room), to_room
 
     if team_guessed.get("A") and team_guessed.get("B"):
-        advance_events = await advance_vs_round_or_end_game(
-            repo=repo,
-            room_code=room_code,
-            header=header,
-            ts=ts,
-            round_cfg=round_cfg,
-        )
-        to_room.extend(advance_events)
+        max_rounds = int(round_cfg.get("max_rounds") or 1)
+        if header.round_no >= max_rounds:
+            transition_events = await enter_vs_transition(
+                repo=repo,
+                room_code=room_code,
+                ts=ts,
+                round_no=header.round_no,
+                front="NO ONE GUESSED CORRECTLY",
+                back="NO WINNER",
+                next_phase="GAME_END",
+                winner_team=None,
+                winner_pid="",
+                word=word_raw,
+                reason="NO_WINNER",
+            )
+        else:
+            transition_events = await enter_vs_transition(
+                repo=repo,
+                room_code=room_code,
+                ts=ts,
+                round_no=header.round_no,
+                front="NO ONE GUESSED CORRECTLY",
+                back="DRAW PHASE",
+                next_phase="DRAW",
+                next_round_no=header.round_no + 1,
+            )
+        to_room.extend(transition_events)
         return list(to_room), to_room
 
     return list(to_room), to_room

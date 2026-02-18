@@ -109,10 +109,12 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     await repo.refresh_room_ttl(room_code, mode="VS")
 
     budget_after = await repo.get_budget(room_code)
+    budget_ev = OutBudgetUpdate(budget=budget_after)
+    sabotage_ev = OutSabotageUsed(by=pid, target=msg.target, cooldown_until=cooldown_until)
     to_room = [
         OutOpBroadcast(op=draw_op.model_dump(), canvas=msg.target, by=pid),
-        OutSabotageUsed(by=pid, target=msg.target, cooldown_until=cooldown_until),
-        OutBudgetUpdate(budget=budget_after),
+        sabotage_ev,
+        budget_ev,
     ]
 
-    return [], to_room
+    return [sabotage_ev, budget_ev], to_room

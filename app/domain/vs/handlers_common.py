@@ -12,6 +12,7 @@ from app.transport.protocols import (
 )
 
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
+TRANSITION_SEC = 5
 
 
 def _int(value, default: int = 0) -> int:
@@ -39,6 +40,15 @@ async def enter_vs_draw_phase(
         round_no=round_no,
         draw_end_at=ts + draw_window_sec,
         guess_end_at=0,
+        transition_until=0,
+        transition_front="",
+        transition_back="",
+        transition_next="",
+        transition_round_no=0,
+        transition_reason="",
+        transition_word="",
+        transition_winner_team="",
+        transition_winner_pid="",
         team_guessed={"A": False, "B": False},
         team_guess_result={"A": "", "B": ""},
         winner_team="",
@@ -71,6 +81,15 @@ async def enter_vs_guess_phase(
         phase="GUESS",
         guess_end_at=ts + guess_window_sec,
         draw_end_at=0,
+        transition_until=0,
+        transition_front="",
+        transition_back="",
+        transition_next="",
+        transition_round_no=0,
+        transition_reason="",
+        transition_word="",
+        transition_winner_team="",
+        transition_winner_pid="",
     )
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
@@ -124,6 +143,15 @@ async def end_vs_game(
         guess_end_at=0,
         game_end_at=ts,
         clear_ops_at=ts + 5,
+        transition_until=0,
+        transition_front="",
+        transition_back="",
+        transition_next="",
+        transition_round_no=0,
+        transition_reason="",
+        transition_word="",
+        transition_winner_team="",
+        transition_winner_pid="",
     )
     await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
@@ -164,7 +192,7 @@ async def advance_vs_round_or_end_game(
         )
 
     new_round_no = header.round_no + 1
-    draw_window_sec = _int(round_cfg.get("draw_window_sec"), 60)
+    draw_window_sec = _int(round_cfg.get("draw_window_sec"), 10)
     stroke_limit = _int(round_cfg.get("strokes_per_phase"), 3)
 
     return await enter_vs_draw_phase(
@@ -187,9 +215,13 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
     phase = game.get("phase") or "DRAW"
     round_cfg = await repo.get_round_config(room_code)
 
-    if phase == "DRAW":
-        draw_end_at = _int(game.get("draw_end_at"), 0)
-        if draw_end_at and ts >= draw_end_at:
+    if phase == "TRANSITION":
+        transition_until = _int(game.get("transition_until"), 0)
+        if transition_until and ts < transition_until:
+            return []
+
+        next_phase = (game.get("transition_next") or "").upper()
+        if next_phase == "GUESS":
             guess_window_sec = _int(round_cfg.get("guess_window_sec"), 10)
             return await enter_vs_guess_phase(
                 repo=repo,
@@ -197,6 +229,47 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
                 ts=ts,
                 round_no=header.round_no,
                 guess_window_sec=guess_window_sec,
+            )
+
+        if next_phase == "DRAW":
+            next_round_no = _int(game.get("transition_round_no"), header.round_no)
+            draw_window_sec = _int(round_cfg.get("draw_window_sec"), 10)
+            stroke_limit = _int(round_cfg.get("strokes_per_phase"), 3)
+            return await enter_vs_draw_phase(
+                repo=repo,
+                room_code=room_code,
+                ts=ts,
+                round_no=next_round_no,
+                draw_window_sec=draw_window_sec,
+                stroke_limit=stroke_limit,
+            )
+
+        if next_phase == "GAME_END":
+            return await end_vs_game(
+                repo=repo,
+                room_code=room_code,
+                header=header,
+                ts=ts,
+                winner_team=game.get("transition_winner_team") or None,
+                winner_pid=game.get("transition_winner_pid") or "",
+                word=game.get("transition_word") or "",
+                reason=game.get("transition_reason") or "NO_WINNER",
+            )
+
+        return []
+
+    if phase == "DRAW":
+        draw_end_at = _int(game.get("draw_end_at"), 0)
+        if draw_end_at and ts >= draw_end_at:
+            guess_window_sec = _int(round_cfg.get("guess_window_sec"), 10)
+            return await enter_vs_transition(
+                repo=repo,
+                room_code=room_code,
+                ts=ts,
+                round_no=header.round_no,
+                front="DRAW TIME UP!",
+                back="GUESS PHASE",
+                next_phase="GUESS",
             )
 
     if phase == "GUESS":
@@ -225,14 +298,68 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
                 team_guessed=team_guessed,
                 team_guess_result=team_guess_result,
             )
-
-            advance_events = await advance_vs_round_or_end_game(
-                repo=repo,
-                room_code=room_code,
-                header=header,
-                ts=ts,
-                round_cfg=round_cfg,
-            )
-            return [*events, *advance_events]
+            max_rounds = _int(round_cfg.get("max_rounds"), 1)
+            word = round_cfg.get("secret_word", "") or ""
+            if header.round_no >= max_rounds:
+                transition_events = await enter_vs_transition(
+                    repo=repo,
+                    room_code=room_code,
+                    ts=ts,
+                    round_no=header.round_no,
+                    front="GUESS TIME UP! NO ONE GUESSED CORRECTLY",
+                    back="NO WINNER",
+                    next_phase="GAME_END",
+                    winner_team=None,
+                    winner_pid="",
+                    word=word,
+                    reason="NO_WINNER",
+                )
+            else:
+                transition_events = await enter_vs_transition(
+                    repo=repo,
+                    room_code=room_code,
+                    ts=ts,
+                    round_no=header.round_no,
+                    front="GUESS TIME UP! NO ONE GUESSED CORRECTLY",
+                    back="DRAW PHASE",
+                    next_phase="DRAW",
+                    next_round_no=header.round_no + 1,
+                )
+            return [*events, *transition_events]
 
     return []
+async def enter_vs_transition(
+    *,
+    repo,
+    room_code: str,
+    ts: int,
+    round_no: int,
+    front: str,
+    back: str,
+    next_phase: str,
+    next_round_no: int = 0,
+    winner_team: str | None = None,
+    winner_pid: str = "",
+    word: str = "",
+    reason: str = "",
+    transition_sec: int = TRANSITION_SEC,
+) -> List[OutgoingEvent]:
+    transition_sec = _int(transition_sec, TRANSITION_SEC)
+    await repo.set_game_fields(
+        room_code,
+        phase="TRANSITION",
+        transition_until=ts + transition_sec,
+        transition_front=front,
+        transition_back=back,
+        transition_next=next_phase,
+        transition_round_no=next_round_no,
+        transition_reason=reason,
+        transition_word=word,
+        transition_winner_team=winner_team or "",
+        transition_winner_pid=winner_pid or "",
+        draw_end_at=0,
+        guess_end_at=0,
+    )
+    await repo.update_room_fields(room_code, last_activity=ts)
+    await repo.refresh_room_ttl(room_code, mode="VS")
+    return [OutPhaseChanged(phase="TRANSITION", round_no=round_no)]

@@ -23,8 +23,9 @@ def can_transition_phase(current: Phase, target: Phase) -> bool:
     """
     transitions: dict[Phase, list[Phase]] = {
         "": ["DRAW"],
-        "DRAW": ["GUESS"],
-        "GUESS": ["DRAW", "VOTING"],
+        "DRAW": ["TRANSITION", "GUESS"],
+        "GUESS": ["TRANSITION", "DRAW", "VOTING"],
+        "TRANSITION": ["DRAW", "GUESS", "VOTING"],
         "VOTING": [""],
     }
     return target in transitions.get(current, [])
