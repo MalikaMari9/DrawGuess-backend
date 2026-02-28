@@ -433,13 +433,14 @@ async def handle_join(*, app, room_code: str, pid: Optional[str], msg: InJoin) -
     if header is None:
         return [OutError(code="ROOM_NOT_FOUND", message=f"Room {room_code} not found. Create it first.")], []
 
-    # enforce cap
-    players = await repo.list_players(room_code)
-    if len(players) >= header.cap:
-        return [OutError(code="ROOM_FULL", message="Room is full")], []
+    existing = await repo.get_player(room_code, pid)
+    # enforce cap for new players only (disconnected players should not consume active slots)
+    if existing is None:
+        active_pids = await repo.get_active_pids(room_code)
+        if len(active_pids) >= header.cap:
+            return [OutError(code="ROOM_FULL", message="Room is full")], []
 
     # Upsert-ish: if player exists, just mark connected + update name/last_seen
-    existing = await repo.get_player(room_code, pid)
     if existing is None:
         p = PlayerStore(
             pid=pid,

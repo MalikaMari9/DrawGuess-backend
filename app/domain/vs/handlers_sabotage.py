@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 from app.domain.common.validation import is_drawer
 from .handlers_common import Result, auto_advance_vs_phase
-from app.domain.vs.rules import SABOTAGE_COOLDOWN_SEC, SABOTAGE_COST_STROKES, SABOTAGE_DISABLE_LAST_SEC
+from app.domain.vs.rules import SABOTAGE_COOLDOWN_SEC, SABOTAGE_DISABLE_LAST_SEC
 from app.store.models import DrawOp
 from app.transport.protocols import OutBudgetUpdate, OutError, OutOpBroadcast, OutSabotageUsed, InSabotage
 from app.util.timeutil import now_ts
@@ -88,7 +88,7 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     ok, reason, cooldown_until, _remaining = await repo.use_sabotage(
         room_code,
         player.team,
-        cost=SABOTAGE_COST_STROKES,
+        cost=1,  # sabotage cost is fixed: exactly 1 stroke
         now_ts=ts,
         cooldown_until=new_cooldown_until,
     )
@@ -111,10 +111,12 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
     budget_after = await repo.get_budget(room_code)
     budget_ev = OutBudgetUpdate(budget=budget_after)
     sabotage_ev = OutSabotageUsed(by=pid, target=msg.target, cooldown_until=cooldown_until)
+    op_ev = OutOpBroadcast(op=draw_op.model_dump(), canvas=msg.target, by=pid)
     to_room = [
-        OutOpBroadcast(op=draw_op.model_dump(), canvas=msg.target, by=pid),
+        op_ev,
         sabotage_ev,
         budget_ev,
     ]
 
-    return [sabotage_ev, budget_ev], to_room
+    # Sender also receives op_broadcast so sabotage rendering is consistent for every client.
+    return [op_ev, sabotage_ev, budget_ev], to_room
