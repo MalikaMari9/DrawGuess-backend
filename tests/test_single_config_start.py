@@ -95,6 +95,34 @@ async def test_single_set_round_config_requires_gm():
 
 
 @pytest.mark.asyncio
+async def test_single_set_round_config_targets_snapshots_and_redacts_secret():
+    repo = FakeRepo()
+    repo.players["g"] = PlayerStore(
+        pid="g",
+        name="Guesser",
+        joined_at=0,
+        last_seen=0,
+        role="guesser",
+        connected=True,
+    )
+    app = FakeApp(repo)
+
+    class Msg:
+        secret_word = "apple"
+        stroke_limit = 12
+        time_limit_sec = 240
+
+    _, to_room = await handle_single_set_round_config(app=app, room_code="R1", pid="gm", msg=Msg())
+    targeted = [e for e in to_room if isinstance(e, dict) and e.get("type") == "room_snapshot"]
+    by_pid = {e.get("targets", [None])[0]: e for e in targeted if len(e.get("targets", [])) == 1}
+
+    assert "d" in by_pid
+    assert "g" in by_pid
+    assert by_pid["d"]["round_config"].get("secret_word") == "apple"
+    assert "secret_word" not in by_pid["g"]["round_config"]
+
+
+@pytest.mark.asyncio
 async def test_single_start_game_requires_config():
     repo = FakeRepo()
     app = FakeApp(repo)

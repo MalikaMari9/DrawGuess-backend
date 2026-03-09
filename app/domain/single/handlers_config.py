@@ -56,5 +56,13 @@ async def handle_single_set_round_config(*, app, room_code: str, pid: Optional[s
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     to_sender = [OutRoomStateChanged(state="CONFIG"), await _snapshot_for(app, room_code, viewer_pid=pid)]
-    to_room = [OutRoomStateChanged(state="CONFIG"), await _snapshot_for(app, room_code, viewer_pid=None)]
+    to_room = [OutRoomStateChanged(state="CONFIG")]
+    players = await repo.list_players(room_code)
+    for p in players:
+        if p.pid == pid:
+            continue
+        if not getattr(p, "connected", True):
+            continue
+        snap = await _snapshot_for(app, room_code, viewer_pid=p.pid)
+        to_room.append({**snap.model_dump(), "targets": [p.pid]})
     return to_sender, to_room
