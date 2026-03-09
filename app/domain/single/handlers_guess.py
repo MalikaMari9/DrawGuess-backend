@@ -94,6 +94,9 @@ async def handle_single_guess(*, app, room_code: str, pid: Optional[str], msg: I
             end_reason="CORRECT",
             game_end_at=ts,
             votes_next={},
+            vote_end_at=ts + 30,
+            reset_to_waiting_at=0,
+            vote_outcome="",
             clear_ops_at=ts + 5,
         )
         await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)

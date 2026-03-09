@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import List, Optional, Tuple
 
 from app.transport.protocols import (
@@ -13,6 +14,7 @@ from app.util.timeutil import now_ts
 
 Outgoing = List[object]
 Result = Tuple[Outgoing, Outgoing]
+logger = logging.getLogger(__name__)
 
 
 async def _snapshot_for(app, room_code: str, *, viewer_pid: Optional[str]) -> OutRoomSnapshot:
@@ -42,6 +44,14 @@ async def handle_single_start_game(*, app, room_code: str, pid: Optional[str], m
     if header.state not in ("CONFIG", "ROLE_PICK"):
         return [OutError(code="BAD_STATE", message=f"Cannot start game in state {header.state}")], []
 
+    logger.info(
+        "[FLOW][BE][single_start_game] room=%s pid=%s state=%s gm_pid=%s",
+        room_code,
+        pid,
+        getattr(header, "state", None),
+        getattr(header, "gm_pid", None),
+    )
+
     cfg = await repo.get_round_config(room_code)
     secret = (cfg.get("secret_word") or "").strip()
     stroke_limit = int(cfg.get("stroke_limit") or 0)
@@ -53,6 +63,14 @@ async def handle_single_start_game(*, app, room_code: str, pid: Optional[str], m
     drawer_pid = roles.get("drawer") or ""
     if not drawer_pid:
         return [OutError(code="NO_DRAWER", message="Drawer not assigned")], []
+
+    logger.info(
+        "[FLOW][BE][single_start_game] room=%s start_ok drawer=%s stroke_limit=%s time_limit_sec=%s",
+        room_code,
+        drawer_pid,
+        stroke_limit,
+        time_limit_sec,
+    )
 
     game_no = int(header.game_no or 0) + 1
     round_no = game_no

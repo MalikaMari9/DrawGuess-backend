@@ -1,6 +1,7 @@
 # app/domain/lifecycle/handlers.py
 from __future__ import annotations
 
+import logging
 import random
 import string
 from typing import List, Tuple, Optional, Literal, Dict, Any
@@ -32,6 +33,7 @@ from app.transport.protocols import (
 
 # Returns: (to_sender, to_room)
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
+logger = logging.getLogger(__name__)
 
 
 
@@ -83,6 +85,9 @@ async def _auto_expire_single_game(
         end_reason="TIMEOUT",
         game_end_at=ts,
         votes_next={},
+        vote_end_at=ts + 30,
+        reset_to_waiting_at=0,
+        vote_outcome="",
         clear_ops_at=ts + 5,
     )
     await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
@@ -195,6 +200,81 @@ async def _auto_resolve_vs_vote_window(
     return [ev]
 
 
+async def _auto_resolve_single_vote_window(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.mode != "SINGLE":
+        return []
+    if header.state != "GAME_END":
+        return []
+
+    game = await repo.get_game(room_code)
+    if game.get("phase") != "VOTING":
+        return []
+
+    vote_end_at_raw = game.get("vote_end_at", 0)
+    try:
+        vote_end_at = int(vote_end_at_raw) if vote_end_at_raw else 0
+    except (TypeError, ValueError):
+        vote_end_at = 0
+
+    if not vote_end_at or ts < vote_end_at:
+        return []
+
+    eligible = list(await repo.get_active_pids(room_code))
+    votes = game.get("votes_next") or {}
+    if not isinstance(votes, dict):
+        votes = {}
+
+    yes_count = sum(1 for p in eligible if votes.get(p) == "yes")
+    threshold = (len(eligible) // 2) + 1
+    logger.info(
+        "[FLOW][BE][single_vote_window_expire] room=%s ts=%s yes=%s eligible=%s threshold=%s",
+        room_code,
+        ts,
+        yes_count,
+        len(eligible),
+        threshold,
+    )
+
+    if yes_count >= threshold:
+        await repo.set_game_fields(
+            room_code,
+            reset_to_waiting_at=ts + 2,
+            vote_end_at=0,
+            vote_outcome="YES",
+        )
+        await repo.update_room_fields(room_code, last_activity=ts)
+        await repo.refresh_room_ttl(room_code, mode="SINGLE")
+        logger.info(
+            "[FLOW][BE][single_vote_window_expire] room=%s outcome=YES reset_to_waiting_at=%s",
+            room_code,
+            ts + 2,
+        )
+        ev = OutVoteResolved(outcome="YES", ts=ts, yes_count=yes_count, eligible=len(eligible))
+        return [ev]
+
+    await repo.set_game_fields(
+        room_code,
+        phase="FINAL",
+        vote_end_at=0,
+        vote_outcome="NO",
+        end_reason="VOTE_NO",
+    )
+    await repo.update_room_fields(room_code, last_activity=ts)
+    await repo.refresh_room_ttl(room_code, mode="SINGLE")
+    logger.info(
+        "[FLOW][BE][single_vote_window_expire] room=%s outcome=NO phase=FINAL end_reason=VOTE_NO",
+        room_code,
+    )
+    ev = OutVoteResolved(outcome="NO", ts=ts, yes_count=yes_count, eligible=len(eligible))
+    return [ev]
+
+
 async def _auto_reset_vs_to_waiting_after_vote_yes(
     *,
     repo,
@@ -253,6 +333,82 @@ async def _auto_reset_vs_to_waiting_after_vote_yes(
     return [OutRoomStateChanged(state="WAITING")]
 
 
+async def _auto_reset_single_to_waiting_after_vote_yes(
+    *,
+    repo,
+    room_code: str,
+    header: RoomHeaderStore,
+    ts: int,
+) -> list[OutgoingEvent]:
+    if header.mode != "SINGLE":
+        return []
+    if header.state != "GAME_END":
+        return []
+
+    game = await repo.get_game(room_code)
+    if game.get("phase") != "VOTING":
+        return []
+
+    reset_at_raw = game.get("reset_to_waiting_at", 0)
+    try:
+        reset_at = int(reset_at_raw) if reset_at_raw else 0
+    except (TypeError, ValueError):
+        reset_at = 0
+
+    if not reset_at or ts < reset_at:
+        return []
+
+    logger.info(
+        "[FLOW][BE][single_reset_waiting] room=%s ts=%s reset_at=%s state_before=%s phase_before=%s",
+        room_code,
+        ts,
+        reset_at,
+        getattr(header, "state", None),
+        game.get("phase"),
+    )
+
+    players = await repo.list_players(room_code)
+    for p in players:
+        await repo.update_player_fields(room_code, p.pid, role=None)
+
+    await repo.set_roles(room_code, {})
+    await repo.vote_next_clear(room_code)
+    await repo.clear_round_config(room_code)
+    await repo.clear_ops(room_code, mode="SINGLE")
+    await repo.set_game_fields(
+        room_code,
+        phase="",
+        votes_next={},
+        winner_pid="",
+        end_reason="",
+        game_started_at=0,
+        game_end_at=0,
+        stroke_limit=0,
+        strokes_left=0,
+        drawer_pid="",
+        vote_end_at=0,
+        reset_to_waiting_at=0,
+        vote_outcome="",
+        clear_ops_at=0,
+    )
+    # Redis hash updates cannot safely encode None values (gm_pid=None),
+    # so clear the field explicitly before writing WAITING fields.
+    await repo.clear_room_field(room_code, "gm_pid")
+    await repo.update_room_fields(
+        room_code,
+        state="WAITING",
+        round_no=0,
+        countdown_end_at=0,
+        last_activity=ts,
+    )
+    await repo.refresh_room_ttl(room_code, mode="SINGLE")
+    logger.info(
+        "[FLOW][BE][single_reset_waiting] room=%s state_after=WAITING phase_after=''",
+        room_code,
+    )
+    return [OutRoomStateChanged(state="WAITING")]
+
+
 async def _auto_start_from_countdown(
     *,
     app,
@@ -274,6 +430,13 @@ async def _auto_start_from_countdown(
 
     if header.mode == "SINGLE":
         from app.domain.single.handlers_start import handle_single_start_game
+        logger.info(
+            "[FLOW][BE][single_auto_start_countdown] room=%s ts=%s gm_pid=%s countdown_end_at=%s",
+            room_code,
+            ts,
+            getattr(header, "gm_pid", None),
+            countdown_end_at,
+        )
         _, to_room = await handle_single_start_game(app=app, room_code=room_code, pid=header.gm_pid, msg=InStartGame())
         return to_room
 
@@ -487,23 +650,48 @@ async def handle_snapshot(*, app, room_code: str, pid: Optional[str], msg: InSna
     reset_events = await _auto_reset_vs_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
     if reset_events:
         header = await repo.get_room_header(room_code) or header
+    single_vote_events = await _auto_resolve_single_vote_window(repo=repo, room_code=room_code, header=header, ts=ts)
+    if single_vote_events:
+        header = await repo.get_room_header(room_code) or header
+    single_reset_events = await _auto_reset_single_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
+    if single_reset_events:
+        header = await repo.get_room_header(room_code) or header
     auto_start_events = await _auto_start_from_countdown(app=app, room_code=room_code, header=header, ts=ts)
     if auto_start_events:
         header = await repo.get_room_header(room_code) or header
     vs_phase_events = await _auto_expire_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
     single_events = await _auto_expire_single_game(repo=repo, room_code=room_code, header=header, ts=ts)
     clear_events = await _auto_clear_ops_after_game(repo=repo, room_code=room_code, header=header, ts=ts)
-    if vote_events or reset_events or auto_start_events or vs_phase_events or single_events or clear_events:
+    if (
+        vote_events
+        or reset_events
+        or single_vote_events
+        or single_reset_events
+        or auto_start_events
+        or vs_phase_events
+        or single_events
+        or clear_events
+    ):
         header = await repo.get_room_header(room_code) or header
 
     snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=pid, redact_secret=True)
     events = []
     events.extend(vote_events)
     events.extend(reset_events)
+    events.extend(single_vote_events)
+    events.extend(single_reset_events)
     events.extend(auto_start_events)
     events.extend(vs_phase_events)
     events.extend(single_events)
     events.extend(clear_events)
+    if events:
+      logger.info(
+          "[FLOW][BE][snapshot_tick] room=%s pid=%s state=%s emitted=%s",
+          room_code,
+          pid,
+          getattr(header, "state", None),
+          [getattr(e, "type", type(e).__name__) for e in events],
+      )
     return [*events, snap], events
 
 
@@ -539,13 +727,27 @@ async def handle_reconnect(*, app, room_code: str, pid: Optional[str], msg: InRe
     reset_events = await _auto_reset_vs_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
     if reset_events:
         header = await repo.get_room_header(room_code) or header
+    single_vote_events = await _auto_resolve_single_vote_window(repo=repo, room_code=room_code, header=header, ts=ts)
+    if single_vote_events:
+        header = await repo.get_room_header(room_code) or header
+    single_reset_events = await _auto_reset_single_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
+    if single_reset_events:
+        header = await repo.get_room_header(room_code) or header
 
     auto_start_events = await _auto_start_from_countdown(app=app, room_code=room_code, header=header, ts=ts)
     if auto_start_events:
         header = await repo.get_room_header(room_code) or header
 
     snap = await _build_snapshot(app, room_code, header.mode, viewer_pid=effective_pid, redact_secret=True)
-    events = [*vote_events, *reset_events, *auto_start_events]
+    events = [*vote_events, *reset_events, *single_vote_events, *single_reset_events, *auto_start_events]
+    if events:
+      logger.info(
+          "[FLOW][BE][reconnect_tick] room=%s pid=%s state=%s emitted=%s",
+          room_code,
+          effective_pid,
+          getattr(header, "state", None),
+          [getattr(e, "type", type(e).__name__) for e in events],
+      )
     return [*events, snap], events
 
 
@@ -569,6 +771,12 @@ async def handle_heartbeat(*, app, room_code: str, pid: Optional[str], msg: InHe
     reset_events = await _auto_reset_vs_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
     if reset_events:
         header = await repo.get_room_header(room_code) or header
+    single_vote_events = await _auto_resolve_single_vote_window(repo=repo, room_code=room_code, header=header, ts=ts)
+    if single_vote_events:
+        header = await repo.get_room_header(room_code) or header
+    single_reset_events = await _auto_reset_single_to_waiting_after_vote_yes(repo=repo, room_code=room_code, header=header, ts=ts)
+    if single_reset_events:
+        header = await repo.get_room_header(room_code) or header
 
     auto_start_events = await _auto_start_from_countdown(app=app, room_code=room_code, header=header, ts=ts)
     if auto_start_events:
@@ -584,10 +792,20 @@ async def handle_heartbeat(*, app, room_code: str, pid: Optional[str], msg: InHe
     events = []
     events.extend(vote_events)
     events.extend(reset_events)
+    events.extend(single_vote_events)
+    events.extend(single_reset_events)
     events.extend(auto_start_events)
     events.extend(vs_phase_events)
     events.extend(single_events)
     events.extend(clear_events)
+    if events:
+      logger.info(
+          "[FLOW][BE][heartbeat_tick] room=%s pid=%s state=%s emitted=%s",
+          room_code,
+          pid,
+          getattr(header, "state", None),
+          [getattr(e, "type", type(e).__name__) for e in events],
+      )
     return list(events), events
 
 

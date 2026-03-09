@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import List, Tuple, Optional, Dict
 import random
 
@@ -17,6 +18,7 @@ from app.domain.vs.roles import auto_assign_vs_roles
 from app.domain.helpers.role_pick import assign_single_roles
 
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
+logger = logging.getLogger(__name__)
 
 
 async def _build_teams(repo, room_code: str) -> Dict[str, List[str]]:
@@ -57,6 +59,14 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
 
     if header.state not in ["WAITING", "ROLE_PICK"]:
         return [OutError(code="BAD_STATE", message=f"Cannot start role pick in state {header.state}")], []
+
+    logger.info(
+        "[FLOW][BE][start_role_pick] room=%s pid=%s mode=%s state=%s",
+        room_code,
+        pid,
+        getattr(header, "mode", None),
+        getattr(header, "state", None),
+    )
 
 
     # Check minimum players based on mode
