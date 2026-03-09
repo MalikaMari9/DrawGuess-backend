@@ -1,6 +1,7 @@
 # app/domain/lifecycle/handlers.py
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import string
@@ -34,6 +35,7 @@ from app.transport.protocols import (
 # Returns: (to_sender, to_room)
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
 logger = logging.getLogger(__name__)
+_ROOM_SINGLE_TIMEOUT_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 
@@ -65,42 +67,65 @@ async def _auto_expire_single_game(
     if header.state != "IN_GAME":
         return []
 
-    game = await repo.get_game(room_code)
-    game_end_at_raw = game.get("game_end_at", 0)
-    try:
-        game_end_at = int(game_end_at_raw) if game_end_at_raw else 0
-    except (TypeError, ValueError):
-        game_end_at = 0
+    lock = _ROOM_SINGLE_TIMEOUT_LOCKS.setdefault(room_code, asyncio.Lock())
+    async with lock:
+        current_header = await repo.get_room_header(room_code)
+        if current_header is None:
+            return []
+        if current_header.mode != "SINGLE":
+            return []
+        if current_header.state != "IN_GAME":
+            return []
 
-    if not game_end_at or ts < game_end_at:
-        return []
+        game = await repo.get_game(room_code)
+        game_end_at_raw = game.get("game_end_at", 0)
+        try:
+            game_end_at = int(game_end_at_raw) if game_end_at_raw else 0
+        except (TypeError, ValueError):
+            game_end_at = 0
 
-    from app.domain.common.roles import clear_all_roles
-    await clear_all_roles(repo, room_code)
-    await repo.vote_next_clear(room_code)
-    await repo.set_game_fields(
-        room_code,
-        phase="VOTING",
-        winner_pid="",
-        end_reason="TIMEOUT",
-        game_end_at=ts,
-        votes_next={},
-        vote_end_at=ts + 30,
-        reset_to_waiting_at=0,
-        vote_outcome="",
-        clear_ops_at=ts + 5,
-    )
-    await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
-    await repo.refresh_room_ttl(room_code, mode="SINGLE")
+        if not game_end_at or ts < game_end_at:
+            return []
 
-    round_cfg = await repo.get_round_config(room_code)
-    word = round_cfg.get("secret_word", "")
+        gm_pid = str(getattr(current_header, "gm_pid", "") or "")
+        if gm_pid:
+            gm = await repo.get_player(room_code, gm_pid)
+            if gm is not None:
+                gm_points = int(getattr(gm, "points", 0) or 0)
+                await repo.update_player_fields(room_code, gm_pid, points=gm_points + 1)
 
-    return [
-        OutRoomStateChanged(state="GAME_END"),
-        OutPhaseChanged(phase="VOTING", round_no=header.round_no),
-        OutGameEnd(winner=None, word=word, game_no=header.game_no, round_no=header.round_no, reason="TIMEOUT"),
-    ]
+        from app.domain.common.roles import clear_all_roles
+        await clear_all_roles(repo, room_code)
+        await repo.vote_next_clear(room_code)
+        await repo.set_game_fields(
+            room_code,
+            phase="VOTING",
+            winner_pid="",
+            end_reason="TIMEOUT",
+            game_end_at=ts,
+            votes_next={},
+            vote_end_at=ts + 30,
+            reset_to_waiting_at=0,
+            vote_outcome="",
+            clear_ops_at=ts + 5,
+        )
+        await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
+        await repo.refresh_room_ttl(room_code, mode="SINGLE")
+
+        round_cfg = await repo.get_round_config(room_code)
+        word = round_cfg.get("secret_word", "")
+
+        return [
+            OutRoomStateChanged(state="GAME_END"),
+            OutPhaseChanged(phase="VOTING", round_no=current_header.round_no),
+            OutGameEnd(
+                winner=None,
+                word=word,
+                game_no=current_header.game_no,
+                round_no=current_header.round_no,
+                reason="TIMEOUT",
+            ),
+        ]
 
 
 async def _auto_clear_ops_after_game(
@@ -828,7 +853,19 @@ async def handle_leave(*, app, room_code: str, pid: Optional[str], msg: InLeave)
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
-    return [], [OutPlayerLeft(pid=pid)]
+    room_events: list[OutgoingEvent] = []
+    if header.mode == "VS":
+        from app.domain.vs.handlers_sabotage import clear_vs_sabotage_if_armed_by
+        room_events.extend(
+            await clear_vs_sabotage_if_armed_by(
+                app=app,
+                room_code=room_code,
+                pid=pid,
+                reason="DISCONNECT",
+            )
+        )
+    room_events.append(OutPlayerLeft(pid=pid))
+    return [], room_events
 
 async def handle_disconnect(*, app, room_code: str, pid: Optional[str]) -> Result:
     """
@@ -850,4 +887,16 @@ async def handle_disconnect(*, app, room_code: str, pid: Optional[str]) -> Resul
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
-    return [], [OutPlayerLeft(pid=pid)]
+    room_events: list[OutgoingEvent] = []
+    if header.mode == "VS":
+        from app.domain.vs.handlers_sabotage import clear_vs_sabotage_if_armed_by
+        room_events.extend(
+            await clear_vs_sabotage_if_armed_by(
+                app=app,
+                room_code=room_code,
+                pid=pid,
+                reason="DISCONNECT",
+            )
+        )
+    room_events.append(OutPlayerLeft(pid=pid))
+    return [], room_events

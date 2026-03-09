@@ -25,6 +25,8 @@ from app.transport.protocols import (
     InGuess,
     InPhaseTick,
     InSabotage,
+    InSabotageArm,
+    InSabotageCancel,
     InVoteNext,
     InModeration,
     InEndGame,
@@ -47,6 +49,8 @@ from app.domain.vs.handlers import (
     handle_vs_guess,
     handle_vs_phase_tick,
     handle_vs_sabotage,
+    handle_vs_sabotage_arm,
+    handle_vs_sabotage_cancel,
     handle_vs_vote_next,
 )
 from app.domain.moderation.handlers import handle_moderation
@@ -218,6 +222,24 @@ async def dispatch_message(
             to_sender, to_room = await handle_vs_sabotage(app=app, room_code=room_code, pid=pid, msg=msg)
             return _dump(to_sender), _dump(to_room)
         err = OutError(code="NOT_IMPLEMENTED", message="Sabotage only for VS mode").model_dump()
+        return [err], []
+
+    if isinstance(msg, InSabotageArm):
+        repo = app.state.repo
+        header = await repo.get_room_header(room_code)
+        if header and header.mode == "VS":
+            to_sender, to_room = await handle_vs_sabotage_arm(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="sabotage_arm only for VS mode").model_dump()
+        return [err], []
+
+    if isinstance(msg, InSabotageCancel):
+        repo = app.state.repo
+        header = await repo.get_room_header(room_code)
+        if header and header.mode == "VS":
+            to_sender, to_room = await handle_vs_sabotage_cancel(app=app, room_code=room_code, pid=pid, msg=msg)
+            return _dump(to_sender), _dump(to_room)
+        err = OutError(code="NOT_IMPLEMENTED", message="sabotage_cancel only for VS mode").model_dump()
         return [err], []
 
     if isinstance(msg, InVoteNext):

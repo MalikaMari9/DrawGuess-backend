@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import List, Tuple
 
 from app.transport.protocols import (
@@ -13,6 +14,7 @@ from app.transport.protocols import (
 
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
 TRANSITION_SEC = 5
+_ROOM_VS_END_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _int(value, default: int = 0) -> int:
@@ -54,6 +56,10 @@ async def enter_vs_draw_phase(
         winner_team="",
         winner_pid="",
         end_reason="",
+        sabotage_armed_by="",
+        sabotage_armed_team="",
+        sabotage_target_team="",
+        sabotage_armed_until=0,
     )
     await repo.set_budget_fields(room_code, A=stroke_limit, B=stroke_limit)
     await repo.update_room_fields(room_code, last_activity=ts, round_no=round_no)
@@ -90,6 +96,10 @@ async def enter_vs_guess_phase(
         transition_word="",
         transition_winner_team="",
         transition_winner_pid="",
+        sabotage_armed_by="",
+        sabotage_armed_team="",
+        sabotage_target_team="",
+        sabotage_armed_until=0,
     )
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")
@@ -108,65 +118,88 @@ async def end_vs_game(
     word: str,
     reason: str,
 ) -> List[OutgoingEvent]:
-    # Keep roles/teams through GAME_END so the end screen can show a leaderboard.
-    # Identity is stripped only after vote-YES resolves.
-    if winner_team in ("A", "B"):
-        players = await repo.list_players(room_code)
-        for p in players:
-            if not getattr(p, "connected", True):
-                continue
+    lock = _ROOM_VS_END_LOCKS.setdefault(room_code, asyncio.Lock())
+    async with lock:
+        current_header = await repo.get_room_header(room_code)
+        if current_header is None:
+            return []
+        if current_header.mode != "VS":
+            return []
+        if current_header.state == "GAME_END":
+            return []
+        if current_header.state != "IN_GAME":
+            return []
 
-            effective_team = getattr(p, "team", None)
-            if effective_team is None:
-                role = (getattr(p, "role", None) or "").strip()
-                if role.endswith("A"):
-                    effective_team = "A"
-                elif role.endswith("B"):
-                    effective_team = "B"
+        # Keep roles/teams through GAME_END so the end screen can show a leaderboard.
+        # Identity is stripped only after vote-YES resolves.
+        if winner_team in ("A", "B"):
+            players = await repo.list_players(room_code)
+            for p in players:
+                if not getattr(p, "connected", True):
+                    continue
 
-            if effective_team != winner_team:
-                continue
+                effective_team = getattr(p, "team", None)
+                if effective_team is None:
+                    role = (getattr(p, "role", None) or "").strip()
+                    if role.endswith("A"):
+                        effective_team = "A"
+                    elif role.endswith("B"):
+                        effective_team = "B"
 
-            pts = int(getattr(p, "points", 0) or 0)
-            await repo.update_player_fields(room_code, p.pid, points=pts + 1)
+                if effective_team != winner_team:
+                    continue
 
-    await repo.vote_next_clear(room_code)
-    await repo.set_game_fields(
-        room_code,
-        phase="VOTING",
-        winner_team=winner_team or "",
-        winner_pid=winner_pid or "",
-        end_reason=reason,
-        votes_next={},
-        vote_end_at=ts + 30,
-        draw_end_at=0,
-        guess_end_at=0,
-        game_end_at=ts,
-        clear_ops_at=ts + 5,
-        transition_until=0,
-        transition_front="",
-        transition_back="",
-        transition_next="",
-        transition_round_no=0,
-        transition_reason="",
-        transition_word="",
-        transition_winner_team="",
-        transition_winner_pid="",
-    )
-    await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
-    await repo.refresh_room_ttl(room_code, mode="VS")
+                pts = int(getattr(p, "points", 0) or 0)
+                await repo.update_player_fields(room_code, p.pid, points=pts + 1)
+        elif reason == "NO_WINNER":
+            gm_pid = str(getattr(current_header, "gm_pid", "") or "")
+            if gm_pid:
+                gm = await repo.get_player(room_code, gm_pid)
+                if gm is not None:
+                    gm_points = int(getattr(gm, "points", 0) or 0)
+                    await repo.update_player_fields(room_code, gm_pid, points=gm_points + 1)
 
-    return [
-        OutRoomStateChanged(state="GAME_END"),
-        OutPhaseChanged(phase="VOTING", round_no=header.round_no),
-        OutGameEnd(
-            winner=winner_team or None,
-            word=word,
-            game_no=header.game_no,
-            round_no=header.round_no,
-            reason=reason,
-        ),
-    ]
+        await repo.vote_next_clear(room_code)
+        await repo.set_game_fields(
+            room_code,
+            phase="VOTING",
+            winner_team=winner_team or "",
+            winner_pid=winner_pid or "",
+            end_reason=reason,
+            votes_next={},
+            vote_end_at=ts + 30,
+            draw_end_at=0,
+            guess_end_at=0,
+            game_end_at=ts,
+            clear_ops_at=ts + 5,
+            transition_until=0,
+            transition_front="",
+            transition_back="",
+            transition_next="",
+            transition_round_no=0,
+            transition_reason="",
+            transition_word="",
+            transition_winner_team="",
+            transition_winner_pid="",
+            sabotage_armed_by="",
+            sabotage_armed_team="",
+            sabotage_target_team="",
+            sabotage_armed_until=0,
+        )
+        await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
+        await repo.refresh_room_ttl(room_code, mode="VS")
+
+        return [
+            OutRoomStateChanged(state="GAME_END"),
+            OutPhaseChanged(phase="VOTING", round_no=current_header.round_no),
+            OutGameEnd(
+                winner=winner_team or None,
+                word=word,
+                game_no=current_header.game_no,
+                round_no=current_header.round_no,
+                reason=reason,
+            ),
+        ]
 
 
 async def advance_vs_round_or_end_game(
@@ -359,6 +392,10 @@ async def enter_vs_transition(
         transition_winner_pid=winner_pid or "",
         draw_end_at=0,
         guess_end_at=0,
+        sabotage_armed_by="",
+        sabotage_armed_team="",
+        sabotage_target_team="",
+        sabotage_armed_until=0,
     )
     await repo.update_room_fields(room_code, last_activity=ts)
     await repo.refresh_room_ttl(room_code, mode="VS")

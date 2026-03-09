@@ -92,6 +92,11 @@ async def handle_vs_start_game(*, app, room_code: str, pid: Optional[str], msg: 
         winner_pid="",
         end_reason="",
         votes_next={},
+        sabotage_used={"A": False, "B": False},
+        sabotage_armed_by="",
+        sabotage_armed_team="",
+        sabotage_target_team="",
+        sabotage_armed_until=0,
         game_end_at=0,
         clear_ops_at=0,
     )

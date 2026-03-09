@@ -85,6 +85,12 @@ class InSabotage(InBase):
     target: Team
     op: Dict[str, Any]
 
+class InSabotageArm(InBase):
+    type: Literal["sabotage_arm"] = "sabotage_arm"
+
+class InSabotageCancel(InBase):
+    type: Literal["sabotage_cancel"] = "sabotage_cancel"
+
 class InEndGame(InBase):
     type: Literal["end_game"] = "end_game"
 
@@ -130,7 +136,7 @@ class InSetRoundConfig(InBase):
     type: Literal["set_round_config"] = "set_round_config"
     secret_word: str = Field(min_length=1, max_length=40)
     stroke_limit: int = Field(ge=10, le=20)
-    time_limit_sec: int = Field(ge=180, le=420)
+    time_limit_sec: int = Field(ge=20, le=300)
 
 
 class InStartGame(InBase):
@@ -151,6 +157,8 @@ IncomingMessage = Union[
     InVoteNext,
     InPhaseTick,
     InSabotage,
+    InSabotageArm,
+    InSabotageCancel,
     InEndGame,
     InModeration,
     InSetTeam,
@@ -237,6 +245,8 @@ _INCOMING_BY_TYPE = {
     "vote_next": InVoteNext,
     "phase_tick": InPhaseTick,
     "sabotage": InSabotage,
+    "sabotage_arm": InSabotageArm,
+    "sabotage_cancel": InSabotageCancel,
     "end_game": InEndGame,
     "moderation": InModeration,
     "set_team": InSetTeam,
@@ -331,6 +341,15 @@ class OutSabotageUsed(OutBase):
     target: Team
     cooldown_until: int
 
+class OutSabotageState(OutBase):
+    type: Literal["sabotage_state"] = "sabotage_state"
+    active: bool
+    by: str = ""
+    from_team: Optional[Team] = None
+    target: Optional[Team] = None
+    armed_until: int = 0
+    reason: str = ""
+
 
 class OutGameEnd(OutBase):
     type: Literal["game_end"] = "game_end"
@@ -378,6 +397,7 @@ OutgoingEvent = Union[
     OutGuessResult,
     OutBudgetUpdate,
     OutSabotageUsed,
+    OutSabotageState,
     OutGameEnd,
     OutVoteResolved,
     OutVoteProgress,
