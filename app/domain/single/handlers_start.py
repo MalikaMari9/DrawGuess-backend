@@ -15,6 +15,7 @@ from app.util.timeutil import now_ts
 Outgoing = List[object]
 Result = Tuple[Outgoing, Outgoing]
 logger = logging.getLogger(__name__)
+SINGLE_TRANSITION_SEC = 5
 
 
 async def _snapshot_for(app, room_code: str, *, viewer_pid: Optional[str]) -> OutRoomSnapshot:
@@ -77,7 +78,7 @@ async def handle_single_start_game(*, app, room_code: str, pid: Optional[str], m
 
     await repo.set_game_fields(
         room_code,
-        phase="DRAW",
+        phase="TRANSITION",
         drawer_pid=drawer_pid,
         game_started_at=ts,
         game_end_at=ts + time_limit_sec,
@@ -88,6 +89,16 @@ async def handle_single_start_game(*, app, room_code: str, pid: Optional[str], m
         round_no=round_no,
         winner_pid="",
         end_reason="",
+        transition_until=ts + SINGLE_TRANSITION_SEC,
+        transition_front="ROUND START!",
+        transition_back="LIVE ROUND",
+        transition_next="DRAW",
+        transition_reason="",
+        transition_word="",
+        transition_winner_pid="",
+        transition_round_no=round_no,
+        draw_end_at=0,
+        guess_end_at=0,
         clear_ops_at=0,
     )
 
@@ -103,12 +114,12 @@ async def handle_single_start_game(*, app, room_code: str, pid: Optional[str], m
 
     to_sender = [
         OutRoomStateChanged(state="IN_GAME"),
-        OutPhaseChanged(phase="DRAW", round_no=round_no),
+        OutPhaseChanged(phase="TRANSITION", round_no=round_no),
         await _snapshot_for(app, room_code, viewer_pid=pid),
     ]
     to_room = [
         OutRoomStateChanged(state="IN_GAME"),
-        OutPhaseChanged(phase="DRAW", round_no=round_no),
+        OutPhaseChanged(phase="TRANSITION", round_no=round_no),
     ]
     players = await repo.list_players(room_code)
     for p in players:

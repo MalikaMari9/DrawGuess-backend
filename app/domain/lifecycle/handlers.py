@@ -36,6 +36,7 @@ from app.transport.protocols import (
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
 logger = logging.getLogger(__name__)
 _ROOM_SINGLE_TIMEOUT_LOCKS: dict[str, asyncio.Lock] = {}
+SINGLE_TRANSITION_SEC = 5
 
 
 
@@ -77,55 +78,178 @@ async def _auto_expire_single_game(
         if current_header.state != "IN_GAME":
             return []
 
-        game = await repo.get_game(room_code)
-        game_end_at_raw = game.get("game_end_at", 0)
-        try:
-            game_end_at = int(game_end_at_raw) if game_end_at_raw else 0
-        except (TypeError, ValueError):
-            game_end_at = 0
+        def _int(value, default: int = 0) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
 
+        async def _finish_single_game(*, reason: str, winner_pid: str, word: str) -> list[OutgoingEvent]:
+            reason_norm = (reason or "NO_WINNER").upper()
+            winner_pid_norm = str(winner_pid or "")
+            end_word = str(word or "")
+            if not end_word:
+                cfg = await repo.get_round_config(room_code)
+                end_word = str(cfg.get("secret_word", "") or "")
+
+            if reason_norm == "CORRECT" and winner_pid_norm:
+                winner_player = await repo.get_player(room_code, winner_pid_norm)
+                if winner_player is not None:
+                    guesser_points = int(getattr(winner_player, "points", 0) or 0)
+                    await repo.update_player_fields(room_code, winner_pid_norm, points=guesser_points + 1)
+
+                game_now = await repo.get_game(room_code)
+                drawer_pid = str(game_now.get("drawer_pid", "") or "")
+                if drawer_pid:
+                    drawer_player = await repo.get_player(room_code, drawer_pid)
+                    if drawer_player is not None:
+                        drawer_points = int(getattr(drawer_player, "points", 0) or 0)
+                        await repo.update_player_fields(room_code, drawer_pid, points=drawer_points + 1)
+            elif reason_norm in ("TIMEOUT", "NO_WINNER"):
+                gm_pid = str(getattr(current_header, "gm_pid", "") or "")
+                if gm_pid:
+                    gm = await repo.get_player(room_code, gm_pid)
+                    if gm is not None:
+                        gm_points = int(getattr(gm, "points", 0) or 0)
+                        await repo.update_player_fields(room_code, gm_pid, points=gm_points + 1)
+
+            from app.domain.common.roles import clear_all_roles
+
+            await clear_all_roles(repo, room_code)
+            await repo.vote_next_clear(room_code)
+            await repo.set_game_fields(
+                room_code,
+                phase="VOTING",
+                winner_pid=winner_pid_norm if reason_norm == "CORRECT" else "",
+                end_reason=reason_norm,
+                game_end_at=ts,
+                votes_next={},
+                vote_end_at=ts + 30,
+                reset_to_waiting_at=0,
+                vote_outcome="",
+                clear_ops_at=ts + 5,
+                transition_until=0,
+                transition_front="",
+                transition_back="",
+                transition_next="",
+                transition_reason="",
+                transition_word="",
+                transition_winner_pid="",
+                transition_round_no=0,
+            )
+            await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
+            await repo.refresh_room_ttl(room_code, mode="SINGLE")
+
+            return [
+                OutRoomStateChanged(state="GAME_END"),
+                OutPhaseChanged(phase="VOTING", round_no=current_header.round_no),
+                OutGameEnd(
+                    winner=None,
+                    word=end_word,
+                    game_no=current_header.game_no,
+                    round_no=current_header.round_no,
+                    reason=reason_norm,
+                ),
+            ]
+
+        game = await repo.get_game(room_code)
+        phase = str(game.get("phase", "DRAW") or "DRAW").upper()
+
+        # SINGLE now runs as one continuous live phase (DRAW) plus TRANSITION/VOTING.
+        # If a room was left in legacy GUESS phase, normalize it to DRAW immediately.
+        if phase == "GUESS":
+            stroke_limit = _int(game.get("stroke_limit"), 0)
+            if stroke_limit <= 0:
+                cfg = await repo.get_round_config(room_code)
+                stroke_limit = _int(cfg.get("stroke_limit"), 0)
+            await repo.set_game_fields(
+                room_code,
+                phase="DRAW",
+                strokes_left=max(0, stroke_limit),
+            )
+            await repo.update_room_fields(room_code, last_activity=ts)
+            await repo.refresh_room_ttl(room_code, mode="SINGLE")
+            return [OutPhaseChanged(phase="DRAW", round_no=current_header.round_no)]
+
+        if phase == "TRANSITION":
+            transition_until = _int(game.get("transition_until"), 0)
+            if transition_until and ts < transition_until:
+                return []
+
+            next_phase = str(game.get("transition_next", "") or "").upper()
+            if next_phase in ("DRAW", "GUESS"):
+                stroke_limit = _int(game.get("stroke_limit"), 0)
+                if stroke_limit <= 0:
+                    cfg = await repo.get_round_config(room_code)
+                    stroke_limit = _int(cfg.get("stroke_limit"), 0)
+                await repo.set_game_fields(
+                    room_code,
+                    phase="DRAW",
+                    strokes_left=max(0, stroke_limit),
+                    transition_until=0,
+                    transition_front="",
+                    transition_back="",
+                    transition_next="",
+                    transition_reason="",
+                    transition_word="",
+                    transition_winner_pid="",
+                    transition_round_no=0,
+                )
+                await repo.update_room_fields(room_code, last_activity=ts)
+                await repo.refresh_room_ttl(room_code, mode="SINGLE")
+                return [OutPhaseChanged(phase="DRAW", round_no=current_header.round_no)]
+
+            if next_phase == "GAME_END":
+                reason = str(game.get("transition_reason", "") or game.get("end_reason", "") or "NO_WINNER")
+                winner_pid = str(game.get("transition_winner_pid", "") or game.get("winner_pid", "") or "")
+                word = str(game.get("transition_word", "") or "")
+                return await _finish_single_game(reason=reason, winner_pid=winner_pid, word=word)
+
+            # Unknown transition target: safely recover to DRAW.
+            stroke_limit = _int(game.get("stroke_limit"), 0)
+            if stroke_limit <= 0:
+                cfg = await repo.get_round_config(room_code)
+                stroke_limit = _int(cfg.get("stroke_limit"), 0)
+            await repo.set_game_fields(
+                room_code,
+                phase="DRAW",
+                strokes_left=max(0, stroke_limit),
+                transition_until=0,
+                transition_front="",
+                transition_back="",
+                transition_next="",
+                transition_reason="",
+                transition_word="",
+                transition_winner_pid="",
+                transition_round_no=0,
+            )
+            await repo.update_room_fields(room_code, last_activity=ts)
+            await repo.refresh_room_ttl(room_code, mode="SINGLE")
+            return [OutPhaseChanged(phase="DRAW", round_no=current_header.round_no)]
+
+        game_end_at = _int(game.get("game_end_at"), 0)
         if not game_end_at or ts < game_end_at:
             return []
 
-        gm_pid = str(getattr(current_header, "gm_pid", "") or "")
-        if gm_pid:
-            gm = await repo.get_player(room_code, gm_pid)
-            if gm is not None:
-                gm_points = int(getattr(gm, "points", 0) or 0)
-                await repo.update_player_fields(room_code, gm_pid, points=gm_points + 1)
-
-        from app.domain.common.roles import clear_all_roles
-        await clear_all_roles(repo, room_code)
-        await repo.vote_next_clear(room_code)
+        round_cfg = await repo.get_round_config(room_code)
+        word = str(round_cfg.get("secret_word", "") or "")
         await repo.set_game_fields(
             room_code,
-            phase="VOTING",
-            winner_pid="",
-            end_reason="TIMEOUT",
-            game_end_at=ts,
-            votes_next={},
-            vote_end_at=ts + 30,
-            reset_to_waiting_at=0,
-            vote_outcome="",
-            clear_ops_at=ts + 5,
+            phase="TRANSITION",
+            transition_until=ts + SINGLE_TRANSITION_SEC,
+            transition_front="TIME'S UP!",
+            transition_back="NO WINNER",
+            transition_next="GAME_END",
+            transition_reason="TIMEOUT",
+            transition_word=word,
+            transition_winner_pid="",
+            transition_round_no=current_header.round_no,
+            draw_end_at=0,
+            guess_end_at=0,
         )
-        await repo.update_room_fields(room_code, state="GAME_END", last_activity=ts)
+        await repo.update_room_fields(room_code, last_activity=ts)
         await repo.refresh_room_ttl(room_code, mode="SINGLE")
-
-        round_cfg = await repo.get_round_config(room_code)
-        word = round_cfg.get("secret_word", "")
-
-        return [
-            OutRoomStateChanged(state="GAME_END"),
-            OutPhaseChanged(phase="VOTING", round_no=current_header.round_no),
-            OutGameEnd(
-                winner=None,
-                word=word,
-                game_no=current_header.game_no,
-                round_no=current_header.round_no,
-                reason="TIMEOUT",
-            ),
-        ]
+        return [OutPhaseChanged(phase="TRANSITION", round_no=current_header.round_no)]
 
 
 async def _auto_clear_ops_after_game(

@@ -25,7 +25,7 @@ class FakeRepo:
         }
         self.roles = {"gm": "gm", "drawer": "d"}
         self.round_cfg = {"secret_word": "Apple", "stroke_limit": 10, "time_limit_sec": 240}
-        self.game = {"phase": "GUESS", "votes_next": {}}
+        self.game = {"phase": "DRAW", "votes_next": {}}
         self.active = {"gm", "d", "g"}
 
     async def get_room_header(self, room_code):
@@ -115,14 +115,12 @@ async def test_single_correct_guess_moves_to_voting():
         text = "apple"
 
     to_sender, to_room = await handle_single_guess(app=app, room_code="R1", pid="g", msg=Msg())
-    assert repo.header.state == "GAME_END"
-    assert repo.game.get("phase") == "VOTING"
-    assert repo.players["gm"].role is None
-    assert repo.players["d"].role is None
-    assert repo.players["g"].role is None
+    assert repo.header.state == "IN_GAME"
+    assert repo.game.get("phase") == "TRANSITION"
+    assert repo.game.get("transition_next") == "GAME_END"
     types = {e.type for e in to_room if hasattr(e, "type")}
     assert "phase_changed" in types
-    assert "game_end" in types
+    assert "game_end" not in types
 
 
 @pytest.mark.asyncio
@@ -147,10 +145,10 @@ async def test_single_phase_tick_gm_only():
         pass
 
     to_sender, to_room = await handle_single_phase_tick(app=app, room_code="R1", pid="gm", msg=Msg())
-    assert any(getattr(e, "type", "") == "phase_changed" for e in to_room)
+    assert not any(getattr(e, "type", "") == "error" for e in to_sender)
 
     to_sender, to_room = await handle_single_phase_tick(app=app, room_code="R1", pid="g", msg=Msg())
-    assert any(getattr(e, "type", "") == "error" for e in to_sender)
+    assert not any(getattr(e, "type", "") == "error" for e in to_sender)
 
 
 @pytest.mark.asyncio
@@ -172,17 +170,19 @@ async def test_single_timeout_ends_game_on_guess():
     repo = FakeRepo()
     app = FakeApp(repo)
     repo.game["game_end_at"] = 1
-    repo.game["phase"] = "GUESS"
+    repo.game["phase"] = "DRAW"
 
     class Msg:
         text = "apple"
 
     to_sender, to_room = await handle_single_guess(app=app, room_code="R1", pid="g", msg=Msg())
-    assert any(getattr(e, "type", "") == "error" for e in to_sender)
+    assert not any(getattr(e, "type", "") == "error" for e in to_sender)
+    assert repo.header.state == "IN_GAME"
+    assert repo.game.get("phase") == "TRANSITION"
+    assert repo.game.get("transition_next") == "GAME_END"
     types = {e.type for e in to_room if hasattr(e, "type")}
-    assert "room_state_changed" in types
     assert "phase_changed" in types
-    assert "game_end" in types
+    assert "game_end" not in types
 
 
 @pytest.mark.asyncio

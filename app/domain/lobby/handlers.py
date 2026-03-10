@@ -19,6 +19,7 @@ from app.domain.helpers.role_pick import assign_single_roles
 
 Result = Tuple[List[OutgoingEvent], List[OutgoingEvent]]
 logger = logging.getLogger(__name__)
+ROLE_PICK_COUNTDOWN_SEC = 10
 
 
 async def _build_teams(repo, room_code: str) -> Dict[str, List[str]]:
@@ -117,7 +118,12 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
         if error:
             return [OutError(code="ROLE_ASSIGN_FAILED", message=error)], []
 
-        await repo.update_room_fields(room_code, state="CONFIG", last_activity=ts)
+        await repo.update_room_fields(
+            room_code,
+            state="CONFIG",
+            last_activity=ts,
+            countdown_end_at=ts + ROLE_PICK_COUNTDOWN_SEC,
+        )
         await repo.refresh_room_ttl(room_code, mode=header.mode)
 
         events = [
@@ -135,7 +141,12 @@ async def handle_start_role_pick(*, app, room_code: str, pid: Optional[str], msg
         seed=f"{room_code}:{ts}",
     )
 
-    await repo.update_room_fields(room_code, state="ROLE_PICK", last_activity=ts)
+    await repo.update_room_fields(
+        room_code,
+        state="ROLE_PICK",
+        last_activity=ts,
+        countdown_end_at=ts + ROLE_PICK_COUNTDOWN_SEC,
+    )
     await repo.refresh_room_ttl(room_code, mode=header.mode)
 
     events = [

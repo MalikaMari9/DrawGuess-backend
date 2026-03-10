@@ -33,13 +33,15 @@ async def handle_single_draw_op(*, app, room_code: str, pid: Optional[str], msg:
     if header.state != "IN_GAME":
         return [OutError(code="BAD_STATE", message=f"Cannot draw in state {header.state}")], []
 
-    timeout_events = await _auto_expire_single_game(repo=repo, room_code=room_code, header=header, ts=ts)
-    if timeout_events:
-        return [OutError(code="GAME_ENDED", message="Game timed out")], timeout_events
+    tick_events = await _auto_expire_single_game(repo=repo, room_code=room_code, header=header, ts=ts)
+    if tick_events:
+        return list(tick_events), tick_events
 
     game = await repo.get_game(room_code)
-    if game.get("phase") != "DRAW":
-        return [OutError(code="BAD_PHASE", message="Not in DRAW phase")], []
+    phase = str(game.get("phase") or "").upper()
+    # Keep GUESS accepted as a temporary compatibility path for in-flight legacy rooms.
+    if phase not in ("DRAW", "GUESS"):
+        return [OutError(code="BAD_PHASE", message="Not in active round")], []
 
     drawer_pid = game.get("drawer_pid") or ""
     if drawer_pid != pid:
