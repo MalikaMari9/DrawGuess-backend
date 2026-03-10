@@ -1,105 +1,79 @@
-# Sabotage Behavior README
+# Sabotage Behavior (Current Runtime)
 
-This document describes the current sabotage behavior for VS mode across backend and frontend.
+This document describes the active VS sabotage flow used by the live handlers.
 
 ## Overview
 
-Sabotage lets a drawer draw a `line` or `circle` directly on the opponent canvas.
-It has strict server validation and a cooldown.
+Sabotage lets a drawer apply one `line` or `circle` on the opponent canvas after arming sabotage.
 
 ## Core Rules
 
-1. Mode/state/phase requirements:
-- Room must be `VS`
+1. Room/phase gates:
+- Room mode must be `VS`
 - Room state must be `IN_GAME`
 - Phase must be `DRAW`
+- Draw window must still be open
 
-2. Role/team requirements:
+2. Role/team gates:
 - Only drawers can sabotage
-- Player must belong to a team
-- Target must be the opponent team (cannot sabotage own team)
+- Drawer must belong to a team
+- Target must be the opponent team (cannot sabotage own canvas)
 
-3. Operation requirements:
-- Sabotage op type must be `line` or `circle`
-- Invalid op types are rejected
+3. Arm-first flow:
+- Drawer sends `sabotage_arm`
+- Next valid sabotage op can be sent with `sabotage`
+- Armed state expires automatically after a short timeout or can be cancelled
 
-4. Timing requirements:
-- Sabotage is blocked in the last `30` seconds of draw phase
+4. Op validation:
+- Only `line` and `circle` sabotage ops are accepted
 
-5. Cost and cooldown:
-- Sabotage cost is exactly `1` stroke
-- Cooldown is `180` seconds
+5. Cost and usage limit:
+- Costs exactly `1` stroke from the attacking team budget
+- Limited to **once per team per game** (`sabotage_used`)
 
-## Backend Enforcement
+6. Not enforced:
+- No cooldown gate
+- No "disabled in last 30 seconds" gate
 
-Backend authority is in:
+## Backend Authority
+
+Runtime enforcement:
 - `app/domain/vs/handlers_sabotage.py`
-- `app/domain/vs/rules.py`
+- Routed via `app/transport/dispatcher.py`
 
-Behavior:
-- Validates all sabotage preconditions
-- Calls Redis atomic sabotage function with `cost=1`
-- Appends sabotage draw op to opponent canvas
-- Broadcasts:
-  - `op_broadcast` (on target canvas)
-  - `sabotage_used` (with `cooldown_until`)
-  - `budget_update`
+Notes:
+- `app/domain/vs/rules.py` does not gate runtime sabotage calls.
+- `OutSabotageUsed.cooldown_until` is emitted as `0` for compatibility with older payload shape.
 
-Important constants (`app/domain/vs/rules.py`):
-- `SABOTAGE_COOLDOWN_SEC = 180`
-- `SABOTAGE_DISABLE_LAST_SEC = 30`
-- `SABOTAGE_COST_STROKES = 1`
+## Frontend
 
-## Frontend Behavior
+Active VS page:
+- `DrawGuessFrontend/src/pages/BattleGame.jsx`
 
-Frontend files:
-- `DrawGuess-frontend/src/pages/BattleGame.jsx`
-- `DrawGuess-frontend/src/pages/BattleGameRT.jsx`
+Legacy page (not routed by default):
+- `DrawGuessFrontend/src/pages/BattleGameRT.jsx`
 
-State model:
-1. `Available`:
-- Drawer in DRAW phase
-- Enough stroke budget
-- Not in cooldown
-- Not in last 30 seconds
-- Brush is `line` or `circle`
+## Common Error Codes
 
-2. `Armed`:
-- User clicks sabotage button
-- Next valid stroke is treated as sabotage
-
-3. `Sent`:
-- On sabotage send, UI immediately starts local cooldown (`now + 180s`)
-- Button becomes unusable immediately (no wait for round-trip)
-
-4. `Confirmed`:
-- Server emits `sabotage_used`
-- UI updates with authoritative `cooldown_until`
-
-## Error/Block Cases
-
-Common server responses:
 - `BAD_PHASE` - not in DRAW
-- `NOT_DRAWER` - not a drawer
-- `INVALID_TARGET` - own team target
-- `SABOTAGE_BLOCKED` - cooldown or last-30s block
-- `INVALID_SABOTAGE_OP` - op not line/circle
+- `DRAW_EXPIRED` - draw window ended
+- `NOT_DRAWER` - only drawers may sabotage
+- `NO_TEAM` - drawer has no team
+- `INVALID_TARGET` - own-team target
+- `SABOTAGE_BUSY` - another sabotage is currently armed
+- `SABOTAGE_NOT_ARMED` - sabotage sent without valid arm state
+- `SABOTAGE_USED` - team already used sabotage this game
+- `INVALID_SABOTAGE_OP` - op type not line/circle
+- `INVALID_SABOTAGE` - malformed line/circle payload
 - `INSUFFICIENT_BUDGET` - not enough strokes
 
 ## Message Flow (Success)
 
-1. Client arms sabotage
-2. Client draws line/circle
-3. Client sends:
-- `{ "type": "sabotage", "target": "A|B", "op": { ... } }`
-4. Server validates and charges 1 stroke
-5. Server emits:
+1. Drawer sends `{ "type": "sabotage_arm" }`
+2. Drawer draws a valid line/circle and sends `{ "type": "sabotage", "target": "A|B", "op": { ... } }`
+3. Server validates, consumes 1 stroke, records team as used, and broadcasts:
 - `op_broadcast` (target canvas)
-- `sabotage_used` (cooldown timestamp)
+- `sabotage_used` (`cooldown_until: 0`)
 - `budget_update`
-
-## Practical Notes
-
-- If draw window is `<= 30` seconds, sabotage is effectively blocked for the entire draw phase.
-- Backend is authoritative; frontend checks are only UX guards.
+- `sabotage_state` inactive (`reason: "USED"`)
 

@@ -26,7 +26,7 @@ python -m pytest tests/test_vs_rules.py
 
 ## Run a Single Test
 ```bash
-python -m pytest tests/test_vs_rules.py -k test_can_sabotage_respects_cooldown_and_last_30s
+python -m pytest tests/test_vs_sabotage_runtime.py -k test_vs_runtime_blocks_second_sabotage_same_team
 ```
 
 ## Notes

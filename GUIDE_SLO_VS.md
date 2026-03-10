@@ -31,7 +31,9 @@ Simple flow + developer terms for VS mode.
 
 **Sabotage**
 - Drawer-only action that draws on opponent canvas.
-- Costs 1 stroke, cooldown enforced, disabled in last 30s of draw window.
+- Costs 1 stroke.
+- Must be armed first, then the next valid line/circle is applied to the opponent canvas.
+- Limited to once per team per game.
 
 **Budget**
 - Per-team stroke budget per DRAW window.

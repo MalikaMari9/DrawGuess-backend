@@ -1,18 +1,13 @@
 # app/domain/vs/rules.py
 from __future__ import annotations
 
-from typing import Optional, Literal
-from app.domain.common.types import Team
+from typing import Optional
 from app.util.timeutil import now_ts
 
 # VS Mode Constants
 MIN_PLAYERS_VS = 5
 STROKES_PER_PHASE_MIN = 1
 STROKES_PER_PHASE_MAX = 20
-SABOTAGE_COOLDOWN_SEC = 180
-SABOTAGE_DISABLE_LAST_SEC = 30
-SABOTAGE_COST_STROKES = 1
-
 # Auto-split limits for stroke enforcement
 MAX_STROKE_DURATION_SEC = 10
 MAX_STROKE_POINTS = 1000
@@ -64,31 +59,6 @@ def calculate_strokes_per_phase() -> int:
     # Default: 4 strokes per phase (within 1-20 range)
     # Can be randomized or made configurable: random.randint(STROKES_PER_PHASE_MIN, STROKES_PER_PHASE_MAX)
     return 4
-
-
-def can_sabotage(
-    cooldown_until: int,
-    round_start_ts: int,
-    round_duration_sec: int,
-    current_ts: Optional[int] = None
-) -> tuple[bool, Optional[str]]:
-    """
-    Check if sabotage is allowed.
-    Returns (allowed, error_message)
-    """
-    ts = current_ts or now_ts()
-    
-    # Check cooldown
-    if ts < cooldown_until:
-        remaining = cooldown_until - ts
-        return False, f"Sabotage on cooldown for {remaining} seconds"
-    
-    # Check if in last 30 seconds
-    elapsed = ts - round_start_ts
-    if elapsed >= (round_duration_sec - SABOTAGE_DISABLE_LAST_SEC):
-        return False, "Sabotage disabled in last 30 seconds of round"
-    
-    return True, None
 
 
 def should_auto_split_stroke(

@@ -37,41 +37,6 @@ local new_val = redis.call("HINCRBY", budget_key, team, -cost)
 return {1, new_val}
 """
 
-    _LUA_SABOTAGE = """
-local budget_key = KEYS[1]
-local cooldown_key = KEYS[2]
-local team = ARGV[1]
-local cost = tonumber(ARGV[2]) or 1
-local now_ts = tonumber(ARGV[3]) or 0
-local cooldown_until = tonumber(ARGV[4]) or 0
-
-local cur_cd = redis.call("HGET", cooldown_key, "sabotage_next_ts_" .. team)
-if cur_cd then
-  cur_cd = tonumber(cur_cd) or 0
-else
-  cur_cd = 0
-end
-
-if now_ts < cur_cd then
-  return {0, "COOLDOWN", cur_cd, cur_cd}
-end
-
-local cur = redis.call("HGET", budget_key, team)
-if not cur then
-  cur = 0
-else
-  cur = tonumber(cur) or 0
-end
-
-if cur < cost then
-  return {0, "BUDGET", cur_cd, cur}
-end
-
-local new_val = redis.call("HINCRBY", budget_key, team, -cost)
-redis.call("HSET", cooldown_key, "sabotage_next_ts_" .. team, cooldown_until)
-return {1, "OK", cooldown_until, new_val}
-"""
-
     def _dec(self, x):
             """Decode redis bytes -> str; pass through str/int/None safely."""
             if x is None:
@@ -336,7 +301,7 @@ return {1, "OK", cooldown_until, new_val}
         return [ModLogEntry.model_validate_json(self._dec(x)) for x in raw]
 
     # ----------------------------
-    # Budget / cooldown (non-atomic version first)
+    # Budget helpers
     # ----------------------------
     async def set_budget_fields(self, room_code: str, **fields: Any) -> None:
         rk = RK(room_code)
@@ -357,42 +322,6 @@ return {1, "OK", cooldown_until, new_val}
         ok = bool(int(res[0]))
         remaining = int(res[1])
         return ok, remaining
-
-    async def use_sabotage(
-        self,
-        room_code: str,
-        team: Literal["A", "B"],
-        *,
-        cost: int,
-        now_ts: int,
-        cooldown_until: int,
-    ) -> tuple[bool, str, int, int]:
-        rk = RK(room_code)
-        res = await self.r.eval(
-            self._LUA_SABOTAGE,
-            2,
-            rk.budget(),
-            rk.cooldown(),
-            team,
-            str(cost),
-            str(now_ts),
-            str(cooldown_until),
-        )
-        ok = bool(int(res[0]))
-        reason = self._dec(res[1])
-        cooldown_val = int(res[2])
-        remaining = int(res[3])
-        return ok, reason, cooldown_val, remaining
-
-    async def set_cooldown_fields(self, room_code: str, **fields: Any) -> None:
-        rk = RK(room_code)
-        mapping = {k: str(v) for k, v in fields.items()}
-        await self.r.hset(rk.cooldown(), mapping=mapping)
-
-    async def get_cooldown(self, room_code: str) -> dict[str, int]:
-        rk = RK(room_code)
-        data = await self.r.hgetall(rk.cooldown())
-        return {self._dec(k): int(self._dec(v)) for k, v in data.items()}
 
     # ----------------------------
     # Voting

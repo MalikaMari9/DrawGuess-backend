@@ -122,17 +122,14 @@ Expected:
 
 ### Step 7: Test Sabotage (Drawers Only)
 
-1. In DRAW phase, click `Sabotage Opponent`
+1. In DRAW phase, click `Sabotage Opponent` (arms sabotage)
+2. Draw one `line` or `circle`
 
 Expected:
 - Op appears on opponent canvas
 - Your budget decreases by 1
-- Cooldown starts (180 seconds)
-- Disabled in last 30 seconds
-
-Test cooldown:
-- Try again immediately -> cooldown error
-- Wait 180 seconds -> works again
+- Team can sabotage only once per game
+- Second attempt by the same team returns `SABOTAGE_USED`
 
 ---
 
@@ -200,8 +197,8 @@ When a team guesses correctly:
 ### Checklist: Sabotage
 - [ ] Only drawers can sabotage
 - [ ] Costs 1 stroke from own team
-- [ ] 180s cooldown works
-- [ ] Disabled in last 30 seconds
+- [ ] Requires arm before send
+- [ ] Limited to once per team per game
 - [ ] Cannot sabotage own team
 
 ### Checklist: Game Rules
@@ -233,8 +230,8 @@ Fix: Role pick assigns the GM; any connected player can trigger the initial role
 ### "No strokes remaining"
 Fix: Budget is consumed. Wait for next DRAW phase.
 
-### "Sabotage on cooldown"
-Fix: Wait 180 seconds between sabotages.
+### "SABOTAGE_USED"
+Fix: That team already consumed its one sabotage for this game.
 
 ### "Not in DRAW phase"
 Fix: GM must advance to DRAW.

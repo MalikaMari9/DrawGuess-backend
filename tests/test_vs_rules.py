@@ -3,9 +3,7 @@ from dataclasses import dataclass
 
 from app.domain.vs.rules import (
     validate_vs_start_conditions,
-    can_sabotage,
     should_auto_split_stroke,
-    SABOTAGE_DISABLE_LAST_SEC,
 )
 
 
@@ -53,29 +51,6 @@ def test_validate_vs_start_conditions_missing_drawers():
     ok, err = validate_vs_start_conditions(players, teams, gm_pid="gm")
     assert ok is False
     assert "drawer" in err
-
-
-def test_can_sabotage_respects_cooldown_and_last_30s():
-    ts = 1000
-    # Cooldown active
-    allowed, err = can_sabotage(cooldown_until=ts + 10, round_start_ts=0, round_duration_sec=300, current_ts=ts)
-    assert allowed is False
-    assert "cooldown" in err
-
-    # Last 30 seconds blocked
-    allowed, err = can_sabotage(
-        cooldown_until=0,
-        round_start_ts=0,
-        round_duration_sec=300,
-        current_ts=300 - SABOTAGE_DISABLE_LAST_SEC,
-    )
-    assert allowed is False
-    assert "last 30 seconds" in err
-
-    # Allowed
-    allowed, err = can_sabotage(cooldown_until=0, round_start_ts=0, round_duration_sec=300, current_ts=100)
-    assert allowed is True
-    assert err is None
 
 
 def test_should_auto_split_stroke_by_points():
