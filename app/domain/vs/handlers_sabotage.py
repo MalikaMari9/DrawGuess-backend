@@ -378,13 +378,15 @@ async def handle_vs_sabotage(*, app, room_code: str, pid: Optional[str], msg: In
         sabotage_ev = OutSabotageUsed(by=pid, target=msg.target, cooldown_until=0)
         op_ev = OutOpBroadcast(op=draw_op.model_dump(), canvas=msg.target, by=pid)
         clear_ev = _inactive_sabotage_state("USED")
+        transition_events = await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
         to_room = [
             *expiry_events,
             op_ev,
             sabotage_ev,
             budget_ev,
             clear_ev,
+            *transition_events,
         ]
 
         # Sender also receives op_broadcast so sabotage rendering is consistent for every client.
-        return [*expiry_events, op_ev, sabotage_ev, budget_ev, clear_ev], to_room
+        return [*expiry_events, op_ev, sabotage_ev, budget_ev, clear_ev, *transition_events], to_room

@@ -246,14 +246,13 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
 
     game = await repo.get_game(room_code)
     phase = game.get("phase") or "DRAW"
-    round_cfg = await repo.get_round_config(room_code)
-
     if phase == "TRANSITION":
         transition_until = _int(game.get("transition_until"), 0)
         if transition_until and ts < transition_until:
             return []
 
         next_phase = (game.get("transition_next") or "").upper()
+        round_cfg = await repo.get_round_config(room_code)
         if next_phase == "GUESS":
             guess_window_sec = _int(round_cfg.get("guess_window_sec"), 10)
             return await enter_vs_guess_phase(
@@ -292,9 +291,23 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
         return []
 
     if phase == "DRAW":
+        budget = await repo.get_budget(room_code)
+        has_budgets = "A" in budget and "B" in budget
+        remaining_a = _int(budget.get("A"), 0)
+        remaining_b = _int(budget.get("B"), 0)
+        if has_budgets and remaining_a <= 0 and remaining_b <= 0:
+            return await enter_vs_transition(
+                repo=repo,
+                room_code=room_code,
+                ts=ts,
+                round_no=header.round_no,
+                front="OUT OF STROKES!",
+                back="GUESS PHASE",
+                next_phase="GUESS",
+            )
+
         draw_end_at = _int(game.get("draw_end_at"), 0)
         if draw_end_at and ts >= draw_end_at:
-            guess_window_sec = _int(round_cfg.get("guess_window_sec"), 10)
             return await enter_vs_transition(
                 repo=repo,
                 room_code=room_code,
@@ -306,6 +319,7 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
             )
 
     if phase == "GUESS":
+        round_cfg = await repo.get_round_config(room_code)
         guess_end_at = _int(game.get("guess_end_at"), 0)
         if guess_end_at and ts >= guess_end_at:
             team_guessed = game.get("team_guessed") or {}
@@ -361,6 +375,8 @@ async def auto_advance_vs_phase(*, repo, room_code: str, header, ts: int) -> Lis
             return [*events, *transition_events]
 
     return []
+
+
 async def enter_vs_transition(
     *,
     repo,

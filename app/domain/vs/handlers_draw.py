@@ -87,13 +87,16 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
         points_for_check = [{"x": p[0], "y": p[1]} for p in pts if isinstance(p, (list, tuple)) and len(p) == 2]
         if should_auto_split_stroke(points_for_check, start_ts, ts):
             budget_after = await repo.get_budget(room_code)
+            budget_ev = OutBudgetUpdate(budget=budget_after)
+            transition_events = await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
             return [
                 OutError(
                     code="STROKE_TOO_LONG",
                     message="Stroke too long (exceeds duration or point limit). Budget consumed.",
                 ),
-                OutBudgetUpdate(budget=budget_after),
-            ], [OutBudgetUpdate(budget=budget_after)]
+                budget_ev,
+                *transition_events,
+            ], [budget_ev, *transition_events]
 
     elif op_type == "circle":
         ok, _remaining = await repo.consume_vs_stroke(room_code, canvas, cost=1)
@@ -112,9 +115,13 @@ async def handle_vs_draw_op(*, app, room_code: str, pid: Optional[str], msg: InD
     await repo.refresh_room_ttl(room_code, mode="VS")
 
     budget_after = await repo.get_budget(room_code)
+    budget_ev = OutBudgetUpdate(budget=budget_after)
     to_room = [
         OutOpBroadcast(op=draw_op.model_dump(), canvas=canvas, by=pid),
-        OutBudgetUpdate(budget=budget_after),
+        budget_ev,
     ]
+    transition_events = await auto_advance_vs_phase(repo=repo, room_code=room_code, header=header, ts=ts)
+    if transition_events:
+        to_room.extend(transition_events)
 
-    return [OutBudgetUpdate(budget=budget_after)], to_room
+    return [budget_ev, *transition_events], to_room
